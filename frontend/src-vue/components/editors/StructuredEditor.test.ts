@@ -7,7 +7,7 @@ describe('StructuredEditor', () => {
   it('normalizes and opens the legacy empty whiteboard without a blank-screen error', async () => {
     const wrapper = mount(StructuredEditor, { props: { type: 'WHITEBOARD', modelValue: JSON.stringify({ type: 'whiteboard', content: [] }) }, global: { plugins: [vuetify] }, attachTo: document.body })
     expect(wrapper.text()).toContain('无限白板')
-    await wrapper.get('button').trigger('click')
+    await wrapper.get('[data-testid="add-board"]').trigger('click')
     expect(wrapper.emitted('update:modelValue')).toBeTruthy()
     wrapper.unmount()
   })
