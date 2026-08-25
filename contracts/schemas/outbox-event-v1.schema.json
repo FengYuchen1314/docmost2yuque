@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.knowledge.local/outbox-event-v1.schema.json",
+  "title": "Transactional outbox event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "specVersion",
+    "eventId",
+    "eventType",
+    "aggregateType",
+    "aggregateId",
+    "occurredAt",
+    "payload"
+  ],
+  "properties": {
+    "specVersion": { "const": "1.0" },
+    "eventId": { "type": "string", "format": "uuid" },
+    "eventType": { "type": "string", "minLength": 1, "maxLength": 150 },
+    "aggregateType": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "aggregateId": { "type": "string", "format": "uuid" },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "traceId": { "type": ["string", "null"], "maxLength": 100 },
+    "payload": { "type": "object" }
+  }
+}

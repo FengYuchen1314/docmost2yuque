@@ -1,0 +1,25 @@
+CREATE TABLE content_transfer_tasks (
+    id UUID PRIMARY KEY,
+    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    task_type VARCHAR(16) NOT NULL,
+    source_format VARCHAR(32) NOT NULL,
+    resource_type VARCHAR(32),
+    resource_id UUID,
+    status VARCHAR(16) NOT NULL,
+    progress INTEGER NOT NULL DEFAULT 0,
+    original_filename VARCHAR(500),
+    result_filename VARCHAR(500),
+    result_media_type VARCHAR(160),
+    report JSONB NOT NULL DEFAULT '{}'::jsonb,
+    artifact BYTEA,
+    artifact_size BIGINT,
+    requested_by UUID NOT NULL REFERENCES users(id),
+    created_at TIMESTAMPTZ NOT NULL,
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ,
+    CONSTRAINT ck_content_transfer_type CHECK (task_type IN ('IMPORT','EXPORT')),
+    CONSTRAINT ck_content_transfer_status CHECK (status IN ('PENDING','RUNNING','SUCCEEDED','FAILED','CANCELLED')),
+    CONSTRAINT ck_content_transfer_progress CHECK (progress BETWEEN 0 AND 100)
+);
+CREATE INDEX ix_content_transfer_tasks_user ON content_transfer_tasks (requested_by, created_at DESC);

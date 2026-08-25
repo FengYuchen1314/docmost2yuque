@@ -1,0 +1,128 @@
+services:
+  database:
+    image: postgres:17.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: knowledge
+      POSTGRES_USER: knowledge
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?set DATABASE_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U knowledge -d knowledge"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [backend]
+
+  api:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+      target: api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: jdbc:postgresql://database:5432/knowledge
+      DATABASE_USER: knowledge
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:?set DATABASE_PASSWORD}
+      SETTINGS_MASTER_KEY: ${SETTINGS_MASTER_KEY:?set SETTINGS_MASTER_KEY}
+      PRIVACY_HASH_KEY: ${PRIVACY_HASH_KEY:?set PRIVACY_HASH_KEY}
+      COLLAB_TICKET_PRIVATE_KEY: ${COLLAB_TICKET_PRIVATE_KEY:?set COLLAB_TICKET_PRIVATE_KEY}
+      COLLAB_INTERNAL_TOKEN: ${COLLAB_INTERNAL_TOKEN:?set COLLAB_INTERNAL_TOKEN}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL}
+      ATTACHMENT_STORAGE_ROOT: /var/lib/knowledge-platform/attachments
+      ATTACHMENT_MAX_FILE_SIZE: ${ATTACHMENT_MAX_FILE_SIZE:-50MB}
+      ATTACHMENT_MAX_REQUEST_SIZE: ${ATTACHMENT_MAX_REQUEST_SIZE:-52MB}
+    depends_on:
+      database:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -ec
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/8080;
+          printf 'GET /actuator/health HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3;
+          grep -q '"status":"UP"' <&3
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    volumes:
+      - attachment-data:/var/lib/knowledge-platform/attachments
+    networks: [backend, edge]
+
+  worker:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+      target: worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: jdbc:postgresql://database:5432/knowledge
+      DATABASE_USER: knowledge
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:?set DATABASE_PASSWORD}
+      SETTINGS_MASTER_KEY: ${SETTINGS_MASTER_KEY:?set SETTINGS_MASTER_KEY}
+      PRIVACY_HASH_KEY: ${PRIVACY_HASH_KEY:?set PRIVACY_HASH_KEY}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL}
+      WORKER_ID: ${WORKER_ID:-worker-1}
+      ATTACHMENT_STORAGE_ROOT: /var/lib/knowledge-platform/attachments
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    volumes:
+      - attachment-data:/var/lib/knowledge-platform/attachments
+    networks: [backend]
+
+  collab:
+    build:
+      context: ..
+      dockerfile: collaboration/Dockerfile
+    restart: unless-stopped
+    environment:
+      COLLAB_TICKET_PUBLIC_KEY: ${COLLAB_TICKET_PUBLIC_KEY:?set COLLAB_TICKET_PUBLIC_KEY}
+      COLLAB_INTERNAL_TOKEN: ${COLLAB_INTERNAL_TOKEN:?set COLLAB_INTERNAL_TOKEN}
+      COLLAB_MATERIALIZATION_URL: http://api:8080/api/internal/v1/collaboration/materialize
+      COLLAB_BIND_ADDRESS: 0.0.0.0:8090
+      DATABASE_HOST: database
+      DATABASE_PORT: 5432
+      DATABASE_NAME: knowledge
+      DATABASE_USER: knowledge
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:?set DATABASE_PASSWORD}
+      RUST_LOG: ${RUST_LOG:-collab_server=info,tower_http=info}
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [backend, edge]
+
+  web:
+    image: ${WEB_IMAGE:-docmost2yuque-web}
+    build:
+      context: ..
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-8088}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+      collab:
+        condition: service_started
+    networks: [edge]
+
+volumes:
+  postgres-data:
+  attachment-data:
+
+networks:
+  backend:
+    internal: true
+  edge:

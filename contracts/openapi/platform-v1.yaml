@@ -1,0 +1,375 @@
+openapi: 3.1.0
+info:
+  title: Knowledge Platform API
+  version: 0.1.0
+  description: |
+    Canonical HTTP contract for the independently implemented knowledge platform.
+    All identity fields named "email" accept an email address only; usernames do not exist.
+servers:
+  - url: /api/v1
+tags:
+  - name: Setup
+  - name: Authentication
+  - name: Administration
+paths:
+  /setup/status:
+    get:
+      tags: [Setup]
+      operationId: getSetupStatus
+      security: []
+      responses:
+        "200":
+          description: Current first-run initialization state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SetupStatus"
+  /setup/initialize:
+    post:
+      tags: [Setup]
+      operationId: initializeInstance
+      description: |
+        Atomically creates the first user, gives that user instance administrator and
+        initial-workspace owner privileges, and permanently closes the bootstrap route.
+        The bootstrap email is considered verified without sending mail.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetupInitializationRequest"
+      responses:
+        "201":
+          description: Instance initialized.
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SetupResult"
+        "409":
+          $ref: "#/components/responses/AlreadyInitialized"
+  /auth/login/password:
+    post:
+      tags: [Authentication]
+      operationId: loginWithPassword
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordLoginRequest"
+      responses:
+        "204":
+          description: Authenticated; the response sets a secure session cookie.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /auth/login/email-code/request:
+    post:
+      tags: [Authentication]
+      operationId: requestEmailLoginCode
+      description: Always returns 202 to prevent account enumeration.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailCodeRequest"
+      responses:
+        "202":
+          description: Accepted whether or not the account exists.
+  /auth/login/email-code/verify:
+    post:
+      tags: [Authentication]
+      operationId: loginWithEmailCode
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailCodeLoginRequest"
+      responses:
+        "204":
+          description: Authenticated; the response sets a secure session cookie.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /admin/auth-settings:
+    get:
+      tags: [Administration]
+      operationId: getRegistrationSettings
+      responses:
+        "200":
+          description: Registration and sign-in configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegistrationSettings"
+  /admin/auth-settings/registration:
+    post:
+      tags: [Administration]
+      operationId: updateRegistrationSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRegistrationSettingsRequest"
+      responses:
+        "200":
+          description: Updated settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegistrationSettings"
+        "422":
+          description: Public registration or email-code login requires working SMTP.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /admin/invitations/create:
+    post:
+      tags: [Administration]
+      operationId: createInvitation
+      description: Invitations are allowed whether public registration is open or closed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInvitationRequest"
+      responses:
+        "202":
+          description: Invitation created and mail delivery queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invitation"
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: KP_SESSION
+  schemas:
+    SetupStatus:
+      type: object
+      additionalProperties: false
+      required: [initialized, registrationMode]
+      properties:
+        initialized:
+          type: boolean
+        registrationMode:
+          $ref: "#/components/schemas/RegistrationMode"
+    SetupInitializationRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password, passwordConfirmation, workspaceName]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 320
+        password:
+          type: string
+          format: password
+          minLength: 10
+          maxLength: 128
+        passwordConfirmation:
+          type: string
+          format: password
+          minLength: 10
+          maxLength: 128
+        workspaceName:
+          type: string
+          minLength: 2
+          maxLength: 120
+    SetupResult:
+      type: object
+      additionalProperties: false
+      required: [userId, workspaceId, email, workspaceName]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        workspaceId:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        workspaceName:
+          type: string
+    PasswordLoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+    EmailCodeRequest:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+    EmailCodeLoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, code]
+      properties:
+        email:
+          type: string
+          format: email
+        code:
+          type: string
+          pattern: "^[0-9]{6}$"
+    RegistrationMode:
+      type: string
+      enum: [CLOSED, PUBLIC]
+    RegistrationSettings:
+      type: object
+      additionalProperties: false
+      required: [registrationMode, passwordLoginEnabled, emailCodeLoginEnabled, smtpReady]
+      properties:
+        registrationMode:
+          $ref: "#/components/schemas/RegistrationMode"
+        passwordLoginEnabled:
+          type: boolean
+        emailCodeLoginEnabled:
+          type: boolean
+        smtpReady:
+          type: boolean
+          readOnly: true
+    UpdateRegistrationSettingsRequest:
+      type: object
+      additionalProperties: false
+      required: [registrationMode, passwordLoginEnabled, emailCodeLoginEnabled]
+      properties:
+        registrationMode:
+          $ref: "#/components/schemas/RegistrationMode"
+        passwordLoginEnabled:
+          type: boolean
+        emailCodeLoginEnabled:
+          type: boolean
+    CreateInvitationRequest:
+      type: object
+      additionalProperties: false
+      required: [email, workspaceId, workspaceRole]
+      properties:
+        email:
+          type: string
+          format: email
+        workspaceId:
+          type: string
+          format: uuid
+        workspaceRole:
+          type: string
+          enum: [ADMIN, MEMBER, EXTERNAL]
+        targetTeamIds:
+          type: array
+          maxItems: 50
+          uniqueItems: true
+          default: []
+          items:
+            type: string
+            format: uuid
+        targetKnowledgeBaseRoles:
+          type: array
+          maxItems: 100
+          default: []
+          items:
+            $ref: "#/components/schemas/InvitationKnowledgeBaseTarget"
+        expiresInHours:
+          type: integer
+          minimum: 1
+          maximum: 720
+          default: 168
+    Invitation:
+      type: object
+      additionalProperties: false
+      required: [id, email, workspaceId, workspaceRole, targetTeamIds, targetKnowledgeBaseRoles, status, expiresAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        workspaceId:
+          type: string
+          format: uuid
+        workspaceRole:
+          type: string
+          enum: [ADMIN, MEMBER, EXTERNAL]
+        targetTeamIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        targetKnowledgeBaseRoles:
+          type: array
+          items:
+            $ref: "#/components/schemas/InvitationKnowledgeBaseTarget"
+        status:
+          type: string
+          enum: [QUEUED, SENT, FAILED, ACCEPTED, REVOKED, EXPIRED]
+        expiresAt:
+          type: string
+          format: date-time
+        sentAt:
+          type: [string, "null"]
+          format: date-time
+    InvitationKnowledgeBaseTarget:
+      type: object
+      additionalProperties: false
+      required: [knowledgeBaseId, role]
+      properties:
+        knowledgeBaseId:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [MANAGER, EDITOR, READER]
+    Problem:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        code:
+          type: string
+  responses:
+    AlreadyInitialized:
+      description: Bootstrap has already completed.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Unauthorized:
+      description: Credentials are invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+security:
+  - sessionCookie: []

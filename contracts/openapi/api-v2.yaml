@@ -1,0 +1,210 @@
+openapi: 3.1.0
+info:
+  title: Knowledge Platform External API
+  version: 2.0.0
+  description: |
+    Workspace-scoped API. API keys and OAuth access tokens identify the creating user;
+    effective access is the intersection of credential scopes and that user's current permissions.
+servers:
+  - url: /api/v2
+security:
+  - bearerAuth: []
+  - apiKeyAuth: []
+tags:
+  - name: Workspaces
+  - name: Users
+  - name: Teams
+  - name: Knowledge bases
+  - name: Documents
+  - name: Catalog
+  - name: Search
+  - name: Webhooks
+paths:
+  /workspaces:
+    get:
+      tags: [Workspaces]
+      summary: List the credential workspace
+      x-required-scope: workspaces:read
+      responses:
+        '200': { description: Visible workspaces, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Workspace' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /users:
+    get:
+      tags: [Users]
+      summary: List workspace members
+      x-required-scope: users:read
+      parameters: [{ $ref: '#/components/parameters/WorkspaceId' }]
+      responses:
+        '200': { description: Workspace members, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/User' } } } } }
+  /teams:
+    get:
+      tags: [Teams]
+      summary: List accessible teams
+      x-required-scope: teams:read
+      parameters: [{ $ref: '#/components/parameters/WorkspaceId' }]
+      responses:
+        '200': { description: Teams, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Team' } } } } }
+  /knowledge-bases:
+    get:
+      tags: [Knowledge bases]
+      summary: List accessible knowledge bases
+      x-required-scope: knowledge-bases:read
+      parameters: [{ $ref: '#/components/parameters/WorkspaceId' }]
+      responses:
+        '200': { description: Knowledge bases, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/KnowledgeBase' } } } } }
+  /documents:
+    get:
+      tags: [Documents]
+      summary: List documents in a knowledge base
+      x-required-scope: documents:read
+      parameters:
+        - { name: knowledgeBaseId, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Documents, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Document' } } } } }
+    post:
+      tags: [Documents]
+      summary: Create a document
+      x-required-scope: documents:write
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/DocumentCreate' } } } }
+      responses:
+        '201': { description: Created document, content: { application/json: { schema: { $ref: '#/components/schemas/Document' } } } }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /documents/{pageId}:
+    parameters:
+      - { name: pageId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [Documents]
+      summary: Get a document and its structured content
+      x-required-scope: documents:read
+      responses:
+        '200': { description: Document, content: { application/json: { schema: { $ref: '#/components/schemas/Document' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Documents]
+      summary: Update a document using optimistic concurrency
+      x-required-scope: documents:write
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/DocumentUpdate' } } } }
+      responses:
+        '200': { description: Updated document, content: { application/json: { schema: { $ref: '#/components/schemas/Document' } } } }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /catalog:
+    get:
+      tags: [Catalog]
+      summary: Get the permission-filtered knowledge base catalog
+      x-required-scope: catalog:read
+      parameters:
+        - { name: knowledgeBaseId, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Catalog tree, content: { application/json: { schema: { $ref: '#/components/schemas/Catalog' } } } }
+  /search:
+    get:
+      tags: [Search]
+      summary: Search visible resources
+      x-required-scope: search:read
+      parameters:
+        - { $ref: '#/components/parameters/WorkspaceId' }
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+        - { name: types, in: query, schema: { type: array, items: { type: string } }, explode: true }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        '200': { description: Search results, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+  /webhooks:
+    get:
+      tags: [Webhooks]
+      summary: List webhook subscriptions
+      x-required-scope: webhooks:read
+      parameters: [{ $ref: '#/components/parameters/WorkspaceId' }]
+      responses:
+        '200': { description: Webhooks, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Webhook' } } } } }
+    post:
+      tags: [Webhooks]
+      summary: Create a signed webhook subscription
+      x-required-scope: webhooks:write
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/WebhookCreate' } } } }
+      responses:
+        '201': { description: Webhook; signingSecret is returned once, content: { application/json: { schema: { $ref: '#/components/schemas/Webhook' } } } }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: Knowledge OAuth access token }
+    apiKeyAuth: { type: apiKey, in: header, name: X-API-Key }
+  parameters:
+    WorkspaceId: { name: workspaceId, in: query, required: true, schema: { type: string, format: uuid } }
+    IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 8, maxLength: 160, pattern: '^[A-Za-z0-9._:-]+$' } }
+  responses:
+    Unauthorized: { description: Missing, invalid, expired or revoked credential, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }
+    Forbidden: { description: Scope or user permission denied, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }
+    NotFound: { description: Missing or concealed resource, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }
+    Conflict: { description: Revision or idempotency conflict, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }
+  schemas:
+    Problem:
+      type: object
+      required: [status, code]
+      properties: { type: { type: string, format: uri }, title: { type: string }, status: { type: integer }, code: { type: string }, detail: { type: string } }
+    Workspace:
+      type: object
+      required: [id, workspaceType, name, membershipRole]
+      properties: { id: { type: string, format: uuid }, workspaceType: { type: string }, name: { type: string }, defaultVisibility: { type: string }, defaultPublishMode: { type: string }, membershipRole: { type: string } }
+    User:
+      type: object
+      required: [userId, email, role]
+      properties: { userId: { type: string, format: uuid }, email: { type: string, format: email }, displayName: { type: [string, 'null'] }, role: { type: string } }
+    Team:
+      type: object
+      additionalProperties: true
+      required: [id, workspaceId, name, slug]
+    KnowledgeBase:
+      type: object
+      additionalProperties: true
+      required: [id, workspaceId, name, slug, visibility]
+    Document:
+      type: object
+      additionalProperties: true
+      required: [id, workspaceId, knowledgeBaseId, title, contentType, path, draftRevision, content, plainText]
+      properties:
+        id: { type: string, format: uuid }
+        workspaceId: { type: string, format: uuid }
+        knowledgeBaseId: { type: string, format: uuid }
+        title: { type: string }
+        contentType: { enum: [DOCUMENT, WHITEBOARD, SPREADSHEET, DATABASE] }
+        path: { type: string }
+        draftRevision: { type: integer }
+        content: {}
+        plainText: { type: string }
+    DocumentCreate:
+      type: object
+      required: [knowledgeBaseId, title, path]
+      properties:
+        knowledgeBaseId: { type: string, format: uuid }
+        title: { type: string, maxLength: 500 }
+        path: { type: string, maxLength: 180 }
+        contentType: { enum: [DOCUMENT, WHITEBOARD, SPREADSHEET, DATABASE], default: DOCUMENT }
+        content: {}
+        icon: { type: [string, 'null'] }
+        cover: { type: [string, 'null'] }
+        publishMode: { enum: [INHERIT, MANUAL, AUTO] }
+        visibilityOverride: { enum: [INHERIT, PRIVATE, WORKSPACE, PUBLIC] }
+        documentSettings: { type: object }
+    DocumentUpdate:
+      allOf:
+        - { $ref: '#/components/schemas/DocumentCreate' }
+        - type: object
+          required: [expectedRevision]
+          properties: { expectedRevision: { type: integer, minimum: 0 }, schemaVersion: { type: integer, minimum: 1 }, revisionKind: { enum: [AUTO, MANUAL, MIGRATION] }, revisionDescription: { type: [string, 'null'], maxLength: 500 } }
+    Catalog:
+      type: object
+      additionalProperties: true
+      required: [knowledgeBaseId, revision, nodes]
+    WebhookCreate:
+      type: object
+      required: [workspaceId, name, endpointUrl, events]
+      properties: { workspaceId: { type: string, format: uuid }, name: { type: string, maxLength: 120 }, endpointUrl: { type: string, format: uri }, events: { type: array, minItems: 1, maxItems: 100, items: { type: string } } }
+    Webhook:
+      type: object
+      additionalProperties: true
+      required: [id, workspaceId, name, endpointUrl, events, active]
+      properties: { signingSecret: { type: [string, 'null'], description: Returned only at creation time } }

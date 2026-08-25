@@ -1,0 +1,37 @@
+[workspace]
+members = [
+    "crates/collab-protocol",
+    "crates/collab-server",
+    "crates/collab-storage",
+    "crates/collab-testkit",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "AGPL-3.0-only"
+
+[workspace.dependencies]
+async-trait = "0.1.92"
+axum = { version = "0.8.9", features = ["json", "ws"] }
+base64 = "0.23.1"
+ed25519-dalek = "2.2.0"
+futures-util = "0.3.34"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0"
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "migrate", "macros"] }
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["full"] }
+tower-http = { version = "0.7.0", features = ["catch-panic", "request-id", "trace"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
+uuid = { version = "1.25.0", features = ["serde", "v7"] }
+yrs = { version = "=0.26.0", features = ["sync"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

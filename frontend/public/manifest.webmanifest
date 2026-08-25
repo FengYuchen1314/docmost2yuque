@@ -1,0 +1,27 @@
+{
+  "id": "/app",
+  "name": "知序",
+  "short_name": "知序",
+  "description": "面向团队与个人的知识协作空间",
+  "lang": "zh-CN",
+  "start_url": "/app?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f7f8fa",
+  "theme_color": "#347a51",
+  "categories": ["productivity", "education"],
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    { "name": "记一笔", "short_name": "小记", "url": "/app/notes?capture=1", "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }] },
+    { "name": "搜索", "url": "/app?search=1", "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }] }
+  ],
+  "share_target": {
+    "action": "/app/capture",
+    "method": "GET",
+    "enctype": "application/x-www-form-urlencoded",
+    "params": { "title": "title", "text": "text", "url": "url" }
+  }
+}

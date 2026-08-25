@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.knowledge.local/collaboration-ticket-v1.schema.json",
+  "title": "Collaboration ticket payload v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "page_id",
+    "user_id",
+    "workspace_id",
+    "content_type",
+    "capabilities",
+    "permission_version",
+    "session_id",
+    "nonce",
+    "scope",
+    "issued_at",
+    "expires_at"
+  ],
+  "properties": {
+    "version": { "const": 2 },
+    "page_id": { "type": "string", "format": "uuid" },
+    "user_id": { "type": "string", "format": "uuid" },
+    "workspace_id": { "type": "string", "format": "uuid" },
+    "content_type": { "enum": ["DOCUMENT", "WHITEBOARD", "SPREADSHEET", "DATABASE"] },
+    "capabilities": {
+      "type": "array",
+      "items": { "enum": ["collaborate"] },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "permission_version": { "type": "integer", "minimum": 0 },
+    "session_id": { "type": "string", "format": "uuid" },
+    "nonce": { "type": "string", "format": "uuid" },
+    "scope": { "const": "collaborate" },
+    "issued_at": { "type": "integer" },
+    "expires_at": { "type": "integer" }
+  }
+}

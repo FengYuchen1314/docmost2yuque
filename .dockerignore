@@ -1,0 +1,11 @@
+.git
+.idea
+.vscode
+**/build
+**/dist
+**/node_modules
+**/playwright-report
+**/test-results
+**/target
+**/*.log
+deploy/.env

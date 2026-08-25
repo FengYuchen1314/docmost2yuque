@@ -1,0 +1,165 @@
+name: Web CI and deployment
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - frontend/**
+      - deploy/nginx.conf
+      - deploy/docker-compose.yml
+      - scripts/deploy-web-image.sh
+      - .github/workflows/web.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-web
+  cancel-in-progress: false
+
+jobs:
+  build-test-deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    environment: production
+    env:
+      IMAGE_REF: docmost2yuque-web:${{ github.sha }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install exact frontend dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Run Vue unit tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Build Vue application
+        working-directory: frontend
+        run: npm run build
+
+      - name: Build and smoke-test web image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --pull --file frontend/Dockerfile --tag "$IMAGE_REF" .
+          container_id="$(docker run --detach --publish 127.0.0.1:18080:8080 "$IMAGE_REF")"
+          cleanup_container() {
+            docker rm --force "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup_container EXIT
+          ready=false
+          for _ in {1..30}; do
+            if curl --fail --silent --show-error --output /dev/null \
+              --max-time 5 http://127.0.0.1:18080/; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$ready" != true ]]; then
+            docker logs "$container_id"
+            exit 1
+          fi
+
+      - name: Export web image
+        id: image-archive
+        if: github.event_name == 'workflow_dispatch' || vars.DEPLOY_WEB_ON_PUSH == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/docmost2yuque-web-${GITHUB_SHA}.tar.gz"
+          checksum="$archive.sha256"
+          docker save "$IMAGE_REF" | gzip -9 > "$archive"
+          sha256sum "$archive" > "$checksum"
+          printf 'archive=%s\n' "$archive" >> "$GITHUB_OUTPUT"
+          printf 'checksum=%s\n' "$checksum" >> "$GITHUB_OUTPUT"
+
+      - name: Configure pinned SSH host identity
+        if: github.event_name == 'workflow_dispatch' || vars.DEPLOY_WEB_ON_PUSH == 'true'
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VPS_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+          [[ "$VPS_PORT" =~ ^[0-9]+$ ]] && (( VPS_PORT >= 1 && VPS_PORT <= 65535 ))
+          [[ "$VPS_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ "$VPS_DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]]
+          [[ -n "$VPS_SSH_PRIVATE_KEY" && -n "$VPS_KNOWN_HOSTS" ]]
+
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" | tr -d '\r' > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
+
+          known_host="$VPS_HOST"
+          if [[ "$VPS_PORT" != 22 ]]; then
+            known_host="[$VPS_HOST]:$VPS_PORT"
+          fi
+          ssh-keygen -F "$known_host" -f "$HOME/.ssh/known_hosts" >/dev/null
+
+      - name: Transfer and deploy only the web service
+        if: github.event_name == 'workflow_dispatch' || vars.DEPLOY_WEB_ON_PUSH == 'true'
+        shell: bash
+        env:
+          IMAGE_ARCHIVE: ${{ steps.image-archive.outputs.archive }}
+          IMAGE_CHECKSUM: ${{ steps.image-archive.outputs.checksum }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          target="$VPS_USER@$VPS_HOST"
+          remote_base="/tmp/docmost2yuque-web-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          remote_archive="$remote_base.tar.gz"
+          remote_checksum="$remote_archive.sha256"
+          ssh_options=(
+            -i "$HOME/.ssh/deploy_key"
+            -p "$VPS_PORT"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts"
+            -o ConnectTimeout=15
+          )
+          scp_options=(
+            -i "$HOME/.ssh/deploy_key"
+            -P "$VPS_PORT"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts"
+            -o ConnectTimeout=15
+          )
+          cleanup_remote() {
+            ssh "${ssh_options[@]}" "$target" \
+              "rm -f -- '$remote_archive' '$remote_checksum'" >/dev/null 2>&1 || true
+          }
+          trap cleanup_remote EXIT
+
+          scp "${scp_options[@]}" "$IMAGE_ARCHIVE" "$target:$remote_archive"
+          scp "${scp_options[@]}" "$IMAGE_CHECKSUM" "$target:$remote_checksum"
+          ssh "${ssh_options[@]}" "$target" \
+            "bash -s -- '$remote_archive' '$remote_checksum' '$IMAGE_REF' '$VPS_DEPLOY_PATH'" \
+            < scripts/deploy-web-image.sh

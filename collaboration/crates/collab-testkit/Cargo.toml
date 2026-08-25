@@ -1,0 +1,10 @@
+[package]
+name = "collab-testkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+collab-protocol = { path = "../collab-protocol" }
+uuid.workspace = true
