@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { Page } from '../../../src/types'
 import { messageOf, post } from '../../services/api'
 import { useUiStore } from '../../stores/ui'
+import { createUuid } from '../../utils/uuid'
 import type { PagePublication, PublicationHistoryPage, PublicationState } from './types'
 import { contentTypeLabel, formatDateTime } from './utils'
 
@@ -99,7 +100,7 @@ async function publish() {
   error.value = ''
   if (!publishIdempotencyKey.value || publishIntentRevision.value !== props.page.draftRevision) {
     publishIntentRevision.value = props.page.draftRevision
-    publishIdempotencyKey.value = `vue-${props.page.id}-${props.page.draftRevision}-${crypto.randomUUID()}`
+    publishIdempotencyKey.value = `vue-${props.page.id}-${props.page.draftRevision}-${createUuid()}`
   }
   try {
     const path = state.value?.published ? '/api/v1/pages/republish' : '/api/v1/pages/publish'

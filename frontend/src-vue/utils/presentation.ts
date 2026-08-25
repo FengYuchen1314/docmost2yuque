@@ -19,6 +19,12 @@ export interface KnowledgeBaseWatermark {
   opacity: number
 }
 
+export interface KnowledgeBaseCatalogDisplay {
+  defaultExpandDepth: number
+  showPath: boolean
+  showUpdatedAt: boolean
+}
+
 export function parseKnowledgeBaseAppearance(value: unknown): KnowledgeBaseAppearance {
   const record = jsonRecord(value)
   return {
@@ -38,6 +44,23 @@ export function parseKnowledgeBaseWatermark(value: unknown): KnowledgeBaseWaterm
     position: oneOf(record.position, ['CENTER', 'TILED', 'FOOTER'], 'TILED'),
     opacity: numberInRange(record.opacity, 0.05, 0.4, 0.12),
   }
+}
+
+export function parseKnowledgeBaseCatalogDisplay(value: unknown): KnowledgeBaseCatalogDisplay {
+  const record = jsonRecord(value)
+  return {
+    defaultExpandDepth: Math.round(numberInRange(record.defaultExpandDepth, 1, 6, 3)),
+    showPath: record.showPath === true,
+    showUpdatedAt: record.showUpdatedAt === true,
+  }
+}
+
+/**
+ * The server intentionally accepts extension fields in these JSON objects.
+ * Visual settings must therefore patch, rather than replace, the stored value.
+ */
+export function mergeKnowledgeBaseConfig(value: unknown, patch: object): string {
+  return JSON.stringify({ ...jsonRecord(value), ...patch })
 }
 
 export function normalizeDocumentSettings(value: unknown): DocumentSettings {

@@ -12,7 +12,13 @@ import {
   normalizeContentCard,
   safeResourceUrl,
 } from './contentCardModel'
-import { decryptSensitiveCard, isSensitiveCardEnvelope } from './sensitiveCardCrypto'
+import {
+  decryptSensitiveCard,
+  isSensitiveCardCryptoAvailable,
+  isSensitiveCardEnvelope,
+  SENSITIVE_CARD_HTTPS_MESSAGE,
+} from './sensitiveCardCrypto'
+import { copyText } from '../page-management/utils'
 
 const props = withDefaults(defineProps<{
   card: ContentCardInput
@@ -67,6 +73,7 @@ const attachmentMeta = computed(() => [
   formatFileSize(data.value.size),
 ].filter(Boolean).join(' · '))
 const sensitiveValid = computed(() => isSensitiveCardEnvelope(data.value))
+const sensitiveCryptoAvailable = computed(() => isSensitiveCardCryptoAvailable())
 const rawPreview = computed(() => {
   const raw = normalized.value.raw || JSON.stringify(data.value, null, 2)
   return raw.length > 600 ? `${raw.slice(0, 600)}…` : raw
@@ -122,8 +129,7 @@ function handleDownload() {
 async function copyCode() {
   if (!props.interactive) return
   try {
-    if (!navigator.clipboard?.writeText) throw new Error('当前浏览器不允许访问剪贴板')
-    await navigator.clipboard.writeText(text('code'))
+    await copyText(text('code'))
     copied.value = true
     emit('copy', actionPayload('copy'))
     window.setTimeout(() => { copied.value = false }, 1600)
@@ -133,7 +139,7 @@ async function copyCode() {
 }
 
 async function revealSensitive() {
-  if (!props.interactive || decrypting.value || password.value.length < 8 || !sensitiveValid.value) return
+  if (!props.interactive || decrypting.value || password.value.length < 8 || !sensitiveValid.value || !sensitiveCryptoAvailable.value) return
   decrypting.value = true
   decryptError.value = ''
   try {
@@ -358,6 +364,15 @@ function emitFailure(operation: ContentCardError['operation'], reason: unknown, 
           <template v-if="plaintext === null">
             <div class="content-card__title">受保护的敏感内容</div>
             <p class="content-card__description">{{ text('hint', '输入查看密码后在本机解密，密码不会上传。') }}</p>
+            <v-alert
+              v-if="sensitiveValid && !sensitiveCryptoAvailable"
+              class="mt-3"
+              type="warning"
+              variant="tonal"
+              density="compact"
+            >
+              {{ SENSITIVE_CARD_HTTPS_MESSAGE }}密文仍保持加密状态，未被修改。
+            </v-alert>
             <form v-if="sensitiveValid" class="sensitive-card__form" @submit.prevent="revealSensitive">
               <v-text-field
                 v-model="password"
@@ -368,7 +383,7 @@ function emitFailure(operation: ContentCardError['operation'], reason: unknown, 
                 minlength="8"
                 maxlength="200"
                 density="compact"
-                :disabled="!interactive || decrypting"
+                :disabled="!interactive || decrypting || !sensitiveCryptoAvailable"
                 :error-messages="decryptError"
               />
               <v-btn
@@ -377,7 +392,7 @@ function emitFailure(operation: ContentCardError['operation'], reason: unknown, 
                 variant="tonal"
                 prepend-icon="mdi-eye-outline"
                 :loading="decrypting"
-                :disabled="!interactive || password.length < 8"
+                :disabled="!interactive || password.length < 8 || !sensitiveCryptoAvailable"
               >查看</v-btn>
             </form>
             <v-alert v-else type="error" variant="tonal" density="compact">加密数据无效，无法解密。</v-alert>

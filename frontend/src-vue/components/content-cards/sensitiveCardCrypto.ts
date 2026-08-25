@@ -2,6 +2,12 @@ import type { SensitiveCardEnvelope } from '../../types/content-card'
 
 const DEFAULT_ITERATIONS = 210_000
 
+export const SENSITIVE_CARD_HTTPS_MESSAGE = '当前连接无法使用浏览器本地加密，请通过 HTTPS 访问后再加密或解密敏感内容。'
+
+export function isSensitiveCardCryptoAvailable(): boolean {
+  return Boolean(globalThis.crypto?.subtle && typeof globalThis.crypto.getRandomValues === 'function')
+}
+
 export async function encryptSensitiveCard(
   plaintext: string,
   password: string,
@@ -9,7 +15,7 @@ export async function encryptSensitiveCard(
 ): Promise<SensitiveCardEnvelope> {
   if (!plaintext || plaintext.length > 20_000) throw new Error('敏感内容必须为 1–20000 个字符')
   if (password.length < 8 || password.length > 200) throw new Error('查看密码必须为 8–200 个字符')
-  if (!globalThis.crypto?.subtle) throw new Error('当前环境不支持浏览器本地加密')
+  if (!isSensitiveCardCryptoAvailable()) throw new Error(SENSITIVE_CARD_HTTPS_MESSAGE)
 
   const salt = crypto.getRandomValues(new Uint8Array(16))
   const iv = crypto.getRandomValues(new Uint8Array(12))
@@ -34,7 +40,7 @@ export async function decryptSensitiveCard(
   password: string,
 ): Promise<string> {
   const envelope = parseSensitiveEnvelope(value)
-  if (!globalThis.crypto?.subtle) throw new Error('当前环境不支持浏览器本地解密')
+  if (!isSensitiveCardCryptoAvailable()) throw new Error(SENSITIVE_CARD_HTTPS_MESSAGE)
   try {
     const salt = decodeBytes(envelope.salt)
     const iv = decodeBytes(envelope.iv)

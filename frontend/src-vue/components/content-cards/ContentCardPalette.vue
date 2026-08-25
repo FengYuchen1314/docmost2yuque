@@ -17,7 +17,12 @@ import {
   normalizeContentCard,
   safeResourceUrl,
 } from './contentCardModel'
-import { encryptSensitiveCard, isSensitiveCardEnvelope } from './sensitiveCardCrypto'
+import {
+  encryptSensitiveCard,
+  isSensitiveCardCryptoAvailable,
+  isSensitiveCardEnvelope,
+  SENSITIVE_CARD_HTTPS_MESSAGE,
+} from './sensitiveCardCrypto'
 
 type PaletteKind = Exclude<ContentCardKind, 'unknown'>
 
@@ -95,6 +100,10 @@ const selectedDefinition = computed(() =>
 const uploadable = computed(() => ['attachment', 'image', 'video'].includes(form.kind))
 const uploadAccept = computed(() => form.kind === 'image' ? 'image/*' : form.kind === 'video' ? 'video/*' : undefined)
 const hasExistingSensitive = computed(() => Boolean(existingSensitiveData.value))
+const sensitiveCryptoAvailable = computed(() => isSensitiveCardCryptoAvailable())
+const sensitiveEncryptionRequired = computed(() => form.kind === 'sensitive-text'
+  && (!hasExistingSensitive.value || Boolean(form.plaintext)))
+const sensitiveEncryptionUnavailable = computed(() => sensitiveEncryptionRequired.value && !sensitiveCryptoAvailable.value)
 const validationMessage = computed(() => validateForm())
 const pending = computed(() => props.busy || submitting.value || uploading.value)
 
@@ -252,6 +261,7 @@ function validateForm(): string {
   }
   if (form.kind === 'code' && !form.code.trim()) return '请输入代码内容'
   if (form.kind === 'callout' && !form.text.trim()) return '请输入提示内容'
+  if (sensitiveEncryptionUnavailable.value) return SENSITIVE_CARD_HTTPS_MESSAGE
   if (form.kind === 'sensitive-text' && !hasExistingSensitive.value && !form.plaintext) return '请输入需要加密的敏感内容'
   if (form.kind === 'sensitive-text' && form.plaintext) {
     if (form.password.length < 8 || form.password.length > 200) return '查看密码必须为 8–200 个字符'
@@ -413,18 +423,21 @@ function statusValue(value: unknown): PaletteForm['status'] {
           </template>
 
           <template v-else-if="form.kind === 'sensitive-text'">
-            <v-alert type="warning" variant="tonal" density="compact">
+            <v-alert v-if="sensitiveCryptoAvailable" type="warning" variant="tonal" density="compact">
               内容使用 PBKDF2-SHA256 + AES-GCM 在浏览器本地加密。系统不会保存查看密码，遗失后无法恢复。
+            </v-alert>
+            <v-alert v-else type="warning" variant="tonal" density="compact">
+              {{ SENSITIVE_CARD_HTTPS_MESSAGE }}<template v-if="hasExistingSensitive">你仍可修改内容提示并保存，现有密文不会被解密或改写。</template>
             </v-alert>
             <v-text-field v-model="form.hint" label="内容提示（可选）" maxlength="200" />
             <v-alert v-if="hasExistingSensitive" type="info" variant="tonal" density="compact">
               留空敏感内容可保留现有密文；输入新内容则会使用新密码重新加密。
             </v-alert>
-            <v-textarea v-model="form.plaintext" :label="hasExistingSensitive ? '新的敏感内容（可选）' : '敏感内容'" rows="7" maxlength="20000" counter />
+            <v-textarea v-model="form.plaintext" :label="hasExistingSensitive ? '新的敏感内容（可选）' : '敏感内容'" rows="7" maxlength="20000" counter :disabled="!sensitiveCryptoAvailable" />
             <template v-if="form.plaintext || !hasExistingSensitive">
               <div class="palette-form__row">
-                <v-text-field v-model="form.password" label="查看密码" type="password" autocomplete="new-password" minlength="8" maxlength="200" />
-                <v-text-field v-model="form.passwordConfirm" label="再次输入查看密码" type="password" autocomplete="new-password" minlength="8" maxlength="200" />
+                <v-text-field v-model="form.password" label="查看密码" type="password" autocomplete="new-password" minlength="8" maxlength="200" :disabled="!sensitiveCryptoAvailable" />
+                <v-text-field v-model="form.passwordConfirm" label="再次输入查看密码" type="password" autocomplete="new-password" minlength="8" maxlength="200" :disabled="!sensitiveCryptoAvailable" />
               </div>
             </template>
           </template>
@@ -440,7 +453,7 @@ function statusValue(value: unknown): PaletteForm['status'] {
         <span class="palette-actions__hint">将写入结构化 JSON；也可使用兼容 token。</span>
         <v-spacer />
         <v-btn variant="text" :disabled="pending" @click="requestClose">取消</v-btn>
-        <v-btn color="primary" prepend-icon="mdi-plus" :loading="submitting" :disabled="pending" @click="submit">
+        <v-btn color="primary" prepend-icon="mdi-plus" :loading="submitting" :disabled="pending || sensitiveEncryptionUnavailable" @click="submit">
           {{ initialCard ? '保存内容卡' : '插入内容卡' }}
         </v-btn>
       </v-card-actions>

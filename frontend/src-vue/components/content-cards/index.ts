@@ -14,6 +14,8 @@ export {
 export {
   decryptSensitiveCard,
   encryptSensitiveCard,
+  isSensitiveCardCryptoAvailable,
   isSensitiveCardEnvelope,
+  SENSITIVE_CARD_HTTPS_MESSAGE,
 } from './sensitiveCardCrypto'
 export type * from '../../types/content-card'

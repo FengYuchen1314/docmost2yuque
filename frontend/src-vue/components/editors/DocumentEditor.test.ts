@@ -8,9 +8,22 @@ const mounted: VueWrapper[] = []
 
 afterEach(() => {
   for (const wrapper of mounted.splice(0)) wrapper.unmount()
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 describe('DocumentEditor', () => {
+  it('initializes and edits a document when randomUUID is unavailable on HTTP', async () => {
+    vi.stubGlobal('crypto', { getRandomValues: (bytes: Uint8Array) => bytes.fill(7) })
+    const wrapper = mountEditor('')
+
+    const input = wrapper.get<HTMLTextAreaElement>('textarea.block-input')
+    expect(input.attributes('placeholder')).toContain('输入 / 唤起命令')
+    await input.setValue('HTTP 下也可以编辑')
+
+    expect(lastUpdate(wrapper)).toBe('HTTP 下也可以编辑')
+  })
+
   it('edits typed Markdown blocks without changing the string serialization format', async () => {
     const wrapper = mountEditor('# 标题\n正文')
     const inputs = wrapper.findAll<HTMLTextAreaElement>('textarea.block-input')

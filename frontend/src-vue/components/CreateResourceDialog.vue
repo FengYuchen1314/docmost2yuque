@@ -5,9 +5,17 @@ import type { KnowledgeBase, Page } from '../../src/types'
 import { messageOf, post } from '../services/api'
 import { useSessionStore } from '../stores/session'
 import { useUiStore } from '../stores/ui'
+import {
+  canCreateResource,
+  needsKnowledgeBase as kindNeedsKnowledgeBase,
+  resetCreateResourceDraft,
+  resourceTitle,
+  type CreateResourceDraft,
+  type ResourceKind,
+} from '../utils/createResource'
 
 const session = useSessionStore(); const ui = useUiStore(); const router = useRouter()
-const form = reactive({ kind: 'DOCUMENT', title: '', slug: '', knowledgeBaseId: '' })
+const form = reactive<CreateResourceDraft>({ kind: 'DOCUMENT', title: '', slug: '', knowledgeBaseId: '' })
 const loading = ref(false); const error = ref('')
 const kinds = [
   { title: '文档', value: 'DOCUMENT', icon: 'mdi-file-document-outline' },
@@ -17,8 +25,9 @@ const kinds = [
   { title: '知识库', value: 'KNOWLEDGE_BASE', icon: 'mdi-book-plus-outline' },
   { title: '组织空间', value: 'WORKSPACE', icon: 'mdi-domain-plus' },
 ]
-const needsKnowledgeBase = computed(() => !['KNOWLEDGE_BASE', 'WORKSPACE'].includes(form.kind))
-watch(() => ui.createOpen, (open) => { if (open) { form.knowledgeBaseId = session.activeKnowledgeBases[0]?.id ?? ''; error.value = '' } })
+const needsKnowledgeBase = computed(() => kindNeedsKnowledgeBase(form.kind))
+const createEnabled = computed(() => canCreateResource(form))
+watch(() => ui.createOpen, () => { resetCreateResourceDraft(form, session.activeKnowledgeBases[0]?.id ?? ''); error.value = '' })
 watch(() => form.title, (title) => { form.slug = slugify(title) })
 function slugify(value: string) { return value.toLowerCase().trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 80) }
 async function create() {
@@ -33,10 +42,10 @@ async function create() {
       const kb = await post<KnowledgeBase>('/api/v1/knowledge-bases/create', { workspaceId, name: form.title, slug: form.slug, ownerType: 'WORKSPACE', ownerId: workspaceId, visibility: 'PRIVATE', publishMode: 'MANUAL' })
       await session.loadNavigation(); ui.createOpen = false; await router.push(`/app/kb/${kb.id}`)
     } else {
-      const page = await post<Page>('/api/v1/pages/create', { knowledgeBaseId: form.knowledgeBaseId, title: form.title || ({ DOCUMENT: '无标题文档', WHITEBOARD: '无标题白板', SPREADSHEET: '无标题电子表格', DATABASE: '无标题数据表' } as Record<string, string>)[form.kind], path: form.slug || `untitled-${Date.now()}`, contentType: form.kind })
+      const kind = form.kind as Exclude<ResourceKind, 'KNOWLEDGE_BASE' | 'WORKSPACE'>
+      const page = await post<Page>('/api/v1/pages/create', { knowledgeBaseId: form.knowledgeBaseId, title: resourceTitle(kind, form.title), path: form.slug || `untitled-${Date.now()}`, contentType: kind })
       ui.createOpen = false; await router.push(`/app/kb/${page.knowledgeBaseId}/pages/${page.id}`)
     }
-    form.title = ''; form.slug = ''
   } catch (value) { error.value = messageOf(value) } finally { loading.value = false }
 }
 </script>
@@ -53,7 +62,7 @@ async function create() {
         <v-text-field v-if="form.kind !== 'WORKSPACE'" v-model="form.slug" label="访问路径" prefix="/" class="mb-4" />
         <v-alert v-if="error" type="error" variant="tonal">{{ error }}</v-alert>
       </v-card-text>
-      <v-card-actions class="pa-6 pt-4"><v-spacer /><v-btn variant="text" @click="ui.createOpen = false">取消</v-btn><v-btn color="primary" :loading="loading" :disabled="!form.title.trim() || (needsKnowledgeBase && !form.knowledgeBaseId)" @click="create">创建</v-btn></v-card-actions>
+      <v-card-actions class="pa-6 pt-4"><v-spacer /><v-btn variant="text" @click="ui.createOpen = false">取消</v-btn><v-btn color="primary" :loading="loading" :disabled="!createEnabled" @click="create">创建</v-btn></v-card-actions>
     </v-card>
   </v-dialog>
 </template>

@@ -4,6 +4,7 @@ import type { QuickNote, QuickNotePage, QuickNoteTag } from '../../../src/types'
 import { messageOf, post } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
 import { useUiStore } from '../../stores/ui'
+import { createUuid } from '../../utils/uuid'
 
 type NoteStatus = QuickNote['status']
 type BatchOperation = 'ARCHIVE' | 'UNARCHIVE' | 'DELETE' | 'RESTORE' | 'ADD_TAG' | 'REMOVE_TAG'
@@ -138,7 +139,7 @@ async function createNote() {
       content: noteDocument(body),
       plainText: body,
       source: 'QUICK_NOTE_PAGE',
-      clientRequestId: crypto.randomUUID(),
+      clientRequestId: createUuid(),
       tagIds: [],
     })
     capture.value = ''

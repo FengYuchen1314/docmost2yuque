@@ -1,8 +1,19 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { Page } from '../../src/types'
 import ContentCardRenderer from './content-cards/ContentCardRenderer.vue'
 import { normalizeContentCard } from './content-cards/contentCardModel'
+import {
+  activeDatabaseView,
+  databaseDisplayValue,
+  databaseRowsForView,
+  databaseViewLabel,
+  normalizeBoard,
+  normalizeDatabase,
+  normalizeWorkbook,
+  type DatabaseField,
+  type DatabaseRow,
+} from '../utils/structuredContent'
 
 interface TextListItem { text: string; checked?: boolean }
 type DocumentItem =
@@ -19,19 +30,59 @@ const props = defineProps<{
   plainText: string
 }>()
 
-const record = computed(() => isRecord(props.content) ? props.content : {})
-const boardElements = computed(() => Array.isArray(record.value.elements)
-  ? record.value.elements.filter(isRecord)
-  : [])
-const sheet = computed(() => {
-  const sheets = Array.isArray(record.value.sheets) ? record.value.sheets.filter(isRecord) : []
-  return sheets[0] ?? {}
+const publicBoard = computed(() => normalizeBoard(props.content))
+const publicWorkbook = computed(() => normalizeWorkbook(props.content))
+const selectedSheetId = ref('')
+watch(publicWorkbook, (value) => {
+  if (!value.sheets.some((sheet) => sheet.id === selectedSheetId.value)) selectedSheetId.value = value.activeSheetId
+}, { immediate: true })
+const publicSheet = computed(() => publicWorkbook.value.sheets.find((sheet) => sheet.id === selectedSheetId.value) ?? publicWorkbook.value.sheets[0]!)
+const publicSheetRows = computed(() => {
+  const query = publicSheet.value.filter.trim().toLocaleLowerCase()
+  return publicSheet.value.rows.map((row, index) => ({ row, index })).filter(({ row, index }) =>
+    !publicSheet.value.hiddenRows.includes(index) && (!query || row.some((cell) => cell.toLocaleLowerCase().includes(query))),
+  )
 })
-const rows = computed(() => Array.isArray(sheet.value.rows) ? sheet.value.rows as unknown[][] : [])
-const fields = computed(() => Array.isArray(record.value.fields) ? record.value.fields.filter(isRecord) : [])
-const databaseRows = computed(() => Array.isArray(record.value.rows)
-  ? record.value.rows.filter(isDatabaseRow)
-  : [])
+const publicSheetColumns = computed(() => {
+  const width = Math.max(1, ...publicSheet.value.rows.map((row) => row.length))
+  return Array.from({ length: width }, (_, column) => column).filter((column) => !publicSheet.value.hiddenColumns.includes(column))
+})
+
+const publicDatabase = computed(() => normalizeDatabase(props.content))
+const publicDatabaseView = computed(() => activeDatabaseView(publicDatabase.value))
+const publicDatabaseFields = computed(() => {
+  const ids = publicDatabaseView.value.visibleFieldIds
+  if (!ids.length) return publicDatabase.value.fields
+  return ids.map((id) => publicDatabase.value.fields.find((field) => field.id === id)).filter((field): field is DatabaseField => Boolean(field))
+})
+const publicDatabaseRows = computed(() => databaseRowsForView(publicDatabase.value, publicDatabaseView.value))
+const publicDatabaseTitleField = computed(() => publicDatabaseFields.value[0] ?? publicDatabase.value.fields[0])
+const publicKanbanField = computed(() => publicDatabase.value.fields.find((field) => field.id === publicDatabaseView.value.groupFieldId)
+  ?? publicDatabase.value.fields.find((field) => field.type === 'SELECT'))
+const publicKanbanGroups = computed(() => {
+  const groups = new Map<string, DatabaseRow[]>()
+  for (const option of publicKanbanField.value?.options ?? []) groups.set(option, [])
+  for (const row of publicDatabaseRows.value) {
+    const name = publicKanbanField.value
+      ? databaseDisplayValue(row.values[publicKanbanField.value.id]).trim() || '未分组'
+      : '未分组'
+    groups.set(name, [...(groups.get(name) ?? []), row])
+  }
+  if (!groups.has('未分组')) groups.set('未分组', [])
+  return [...groups.entries()].map(([name, rows]) => ({ name, rows }))
+})
+const publicCalendarField = computed(() => publicDatabase.value.fields.find((field) => field.id === publicDatabaseView.value.groupFieldId && field.type === 'DATE')
+  ?? publicDatabase.value.fields.find((field) => field.type === 'DATE'))
+const publicCalendarGroups = computed(() => {
+  const groups = new Map<string, DatabaseRow[]>()
+  for (const row of publicDatabaseRows.value) {
+    const day = publicCalendarField.value
+      ? databaseDisplayValue(row.values[publicCalendarField.value.id]).trim() || '未安排日期'
+      : '未配置日期字段'
+    groups.set(day, [...(groups.get(day) ?? []), row])
+  }
+  return [...groups.entries()].sort(([left], [right]) => left.localeCompare(right, 'zh-CN')).map(([day, rows]) => ({ day, rows }))
+})
 
 const documentItems = computed<DocumentItem[]>(() => {
   const structured = structuredDocument(props.content)
@@ -238,12 +289,29 @@ function keyFactory() {
   return (kind: string) => `${kind}-${value++}`
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+function publicSheetCellStyle(row: number, column: number): Record<string, string | number | undefined> {
+  const style = publicSheet.value.styles[`${row}:${column}`] ?? {}
+  return {
+    fontWeight: style.bold ? 700 : undefined,
+    fontStyle: style.italic ? 'italic' : undefined,
+    textDecoration: style.underline ? 'underline' : undefined,
+    textAlign: style.align?.toLowerCase(),
+    color: style.color,
+    background: style.background,
+  }
 }
 
-function isDatabaseRow(value: unknown): value is { id: string; values: Record<string, unknown> } {
-  return isRecord(value) && typeof value.id === 'string' && isRecord(value.values)
+function publicDatabaseRowTitle(row: DatabaseRow): string {
+  const field = publicDatabaseTitleField.value
+  return field ? databaseDisplayValue(row.values[field.id]) || '无标题记录' : '无标题记录'
+}
+
+function publicDatabaseSecondaryFields(): DatabaseField[] {
+  return publicDatabaseFields.value.filter((field) => field.id !== publicDatabaseTitleField.value?.id).slice(0, 3)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 </script>
 
@@ -278,29 +346,64 @@ function isDatabaseRow(value: unknown): value is { id: string; values: Record<st
       </template>
     </template>
 
-    <div v-else-if="contentType === 'WHITEBOARD'" class="public-board">
-      <div
-        v-for="element in boardElements"
-        :key="String(element.id)"
-        class="public-board-item"
-        :style="{
-          left: `${Number(element.x) || 0}px`, top: `${Number(element.y) || 0}px`,
-          width: `${Number(element.width) || 160}px`, height: `${Number(element.height) || 100}px`,
-          background: String(element.color || '#fff'),
-        }"
-      >{{ element.text }}</div>
-      <div v-if="!boardElements.length" class="empty-state"><p>空白板</p></div>
+    <div v-else-if="contentType === 'WHITEBOARD'" class="public-board" data-testid="public-whiteboard">
+      <div class="public-board-surface" :style="{ transform: `translate(${publicBoard.viewport.x}px, ${publicBoard.viewport.y}px) scale(${publicBoard.viewport.zoom})` }">
+        <template v-for="element in publicBoard.elements" :key="element.id">
+          <svg
+            v-if="element.kind === 'ARROW'"
+            class="public-board-item public-board-arrow"
+            data-kind="ARROW"
+            :style="{ left: `${element.x}px`, top: `${element.y}px`, width: `${element.width}px`, height: `${Math.max(24, element.height)}px` }"
+            :aria-label="element.text || '箭头'"
+          >
+            <defs><marker :id="`public-arrow-${element.id}`" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" /></marker></defs>
+            <line x1="2" y1="12" :x2="Math.max(2, element.width - 9)" y2="12" :marker-end="`url(#public-arrow-${element.id})`" />
+          </svg>
+          <div
+            v-else
+            class="public-board-item"
+            :class="`kind-${element.kind.toLowerCase()}`"
+            :data-kind="element.kind"
+            :style="{
+              left: `${element.x}px`, top: `${element.y}px`, width: `${element.width}px`, height: `${element.height}px`,
+              background: element.kind === 'TEXT' ? 'transparent' : element.color,
+            }"
+          >{{ element.text }}</div>
+        </template>
+      </div>
+      <div v-if="!publicBoard.elements.length" class="empty-state"><p>空白板</p></div>
     </div>
 
-    <div v-else-if="contentType === 'SPREADSHEET'" class="public-table">
-      <table><tbody><tr v-for="(row, r) in rows" :key="r"><td v-for="(cell, c) in row" :key="c">{{ cell }}</td></tr></tbody></table>
-      <div v-if="!rows.length" class="empty-state"><p>空电子表格</p></div>
+    <div v-else-if="contentType === 'SPREADSHEET'" class="public-sheet" data-testid="public-spreadsheet">
+      <header class="public-sheet-header"><strong>{{ publicSheet.name }}</strong><span>{{ publicSheetRows.length }} 行</span></header>
+      <div v-if="publicSheet.rows.length" class="public-table public-sheet-table"><table><tbody><tr v-for="entry in publicSheetRows" :key="entry.index" :class="{ frozen: entry.index < publicSheet.frozenRows }"><td
+        v-for="(column, visibleColumn) in publicSheetColumns"
+        :key="column"
+        :class="{ 'frozen-column': column < publicSheet.frozenColumns }"
+        :style="{ ...publicSheetCellStyle(entry.index, column), left: column < publicSheet.frozenColumns ? `${visibleColumn * 110}px` : undefined }"
+      >{{ entry.row[column] ?? '' }}</td></tr></tbody></table></div>
+      <div v-else class="empty-state"><p>空电子表格</p></div>
+      <nav v-if="publicWorkbook.sheets.length > 1" class="public-sheet-tabs" aria-label="工作表">
+        <button v-for="sheetItem in publicWorkbook.sheets" :key="sheetItem.id" type="button" :class="{ active: sheetItem.id === publicSheet.id }" :data-sheet-id="sheetItem.id" @click="selectedSheetId = sheetItem.id">{{ sheetItem.name }}</button>
+      </nav>
     </div>
 
-    <div v-else class="public-table">
-      <table><thead><tr><th v-for="field in fields" :key="String(field.id)">{{ field.name }}</th></tr></thead>
-        <tbody><tr v-for="row in databaseRows" :key="row.id"><td v-for="field in fields" :key="String(field.id)">{{ row.values[String(field.id)] }}</td></tr></tbody></table>
-      <div v-if="!databaseRows.length" class="empty-state"><p>空数据表</p></div>
+    <div v-else class="public-database" :data-view="publicDatabaseView.type">
+      <header class="public-database-header"><strong>{{ databaseViewLabel(publicDatabaseView.type) }}视图</strong><span>{{ publicDatabaseRows.length }} 条记录</span></header>
+      <div v-if="publicDatabaseView.type === 'TABLE'" class="public-table" data-testid="public-database-table">
+        <table><thead><tr><th v-for="field in publicDatabaseFields" :key="field.id">{{ field.name }}</th></tr></thead>
+          <tbody><tr v-for="row in publicDatabaseRows" :key="row.id"><td v-for="field in publicDatabaseFields" :key="field.id">{{ databaseDisplayValue(row.values[field.id]) }}</td></tr></tbody></table>
+        <div v-if="!publicDatabaseRows.length" class="empty-state"><p>{{ publicDatabaseView.filter ? '没有符合筛选条件的记录' : '空数据表' }}</p></div>
+      </div>
+      <div v-else-if="publicDatabaseView.type === 'KANBAN'" class="public-database-kanban" data-testid="public-database-kanban">
+        <section v-for="group in publicKanbanGroups" :key="group.name"><header><strong>{{ group.name }}</strong><span>{{ group.rows.length }}</span></header><article v-for="row in group.rows" :key="row.id"><strong>{{ publicDatabaseRowTitle(row) }}</strong><small v-for="field in publicDatabaseSecondaryFields()" :key="field.id">{{ field.name }} · {{ databaseDisplayValue(row.values[field.id]) || '—' }}</small></article><p v-if="!group.rows.length">暂无记录</p></section>
+      </div>
+      <div v-else-if="publicDatabaseView.type === 'GALLERY'" class="public-database-gallery" data-testid="public-database-gallery">
+        <article v-for="row in publicDatabaseRows" :key="row.id"><span aria-hidden="true">▣</span><strong>{{ publicDatabaseRowTitle(row) }}</strong><small v-for="field in publicDatabaseSecondaryFields()" :key="field.id">{{ field.name }} · {{ databaseDisplayValue(row.values[field.id]) || '—' }}</small></article><div v-if="!publicDatabaseRows.length" class="empty-state"><p>{{ publicDatabaseView.filter ? '没有符合筛选条件的记录' : '暂无记录' }}</p></div>
+      </div>
+      <div v-else class="public-database-calendar" data-testid="public-database-calendar">
+        <section v-for="group in publicCalendarGroups" :key="group.day"><header><strong>{{ group.day }}</strong><span>{{ group.rows.length }}</span></header><div v-for="row in group.rows" :key="row.id">{{ publicDatabaseRowTitle(row) }}</div></section><div v-if="!publicDatabaseRows.length" class="empty-state"><p>{{ publicDatabaseView.filter ? '没有符合筛选条件的记录' : '暂无日历记录' }}</p></div>
+      </div>
     </div>
   </article>
 </template>
@@ -325,13 +428,46 @@ function isDatabaseRow(value: unknown): value is { id: string; values: Record<st
 .public-task__box { display: inline-flex; width: 19px; height: 19px; flex: 0 0 19px; align-items: center; justify-content: center; margin-top: 7px; border: 1.5px solid #94a3b8; border-radius: 5px; color: white; font-size: 12px; line-height: 1; }
 .public-task--done { color: #64748b; text-decoration: line-through; }
 .public-task--done .public-task__box { border-color: #16a34a; background: #16a34a; }
-.public-board { position: relative; height: 520px; overflow: auto; border-radius: 16px; background-color: #f8fafc; background-image: radial-gradient(#cbd5e1 1px, transparent 1px); background-size: 20px 20px; }
-.public-board-item { position: absolute; overflow: auto; border: 1px solid #cbd5e1; border-radius: 10px; padding: 14px; }
+.public-board { position: relative; height: 520px; overflow: hidden; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #f8fafc; background-image: radial-gradient(#cbd5e1 1px, transparent 1px); background-size: 20px 20px; }
+.public-board-surface { position: absolute; left: 0; top: 0; width: 4000px; height: 2400px; transform-origin: 0 0; }
+.public-board-item { position: absolute; overflow: auto; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 10px; padding: 14px; white-space: pre-wrap; overflow-wrap: anywhere; box-shadow: 0 8px 20px #0f172a12; }
+.public-board-item.kind-ellipse { display: grid; place-content: center; border-radius: 999px; text-align: center; }
+.public-board-item.kind-rect { display: grid; place-content: center; text-align: center; }
+.public-board-item.kind-text { border-color: transparent; padding: 4px; box-shadow: none; }
+.public-board-arrow { overflow: visible; border: 0; padding: 0; box-shadow: none; }
+.public-board-arrow line { stroke: #475569; stroke-width: 2; }
+.public-board-arrow path { fill: #475569; }
+.public-sheet, .public-database { overflow: hidden; border: 1px solid #e2e8f0; border-radius: 14px; background: white; }
+.public-sheet-header, .public-database-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px; border-bottom: 1px solid #e2e8f0; background: #f8fafc; }
+.public-sheet-header span, .public-database-header span { color: #64748b; font-size: 13px; }
 .public-table { overflow: auto; }
 .public-table table { width: 100%; border-collapse: collapse; }
 .public-table th, .public-table td { border: 1px solid #e2e8f0; padding: 10px; text-align: left; }
+.public-sheet-table td { min-width: 110px; }
+.public-sheet-table tr.frozen td { position: sticky; top: 0; z-index: 2; }
+.public-sheet-table td.frozen-column { position: sticky; z-index: 1; }
+.public-sheet-table tr.frozen td.frozen-column { z-index: 3; }
+.public-sheet-tabs { display: flex; gap: 4px; overflow-x: auto; padding: 8px 12px; border-top: 1px solid #e2e8f0; }
+.public-sheet-tabs button { border: 0; border-radius: 8px; padding: 7px 12px; background: transparent; color: #475569; cursor: pointer; }
+.public-sheet-tabs button.active { background: #dbeafe; color: #1d4ed8; font-weight: 700; }
+.public-database-kanban { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(220px, 280px); gap: 14px; overflow-x: auto; padding: 16px; background: #f8fafc; }
+.public-database-kanban > section { border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px; background: #f1f5f9; }
+.public-database-kanban > section > header, .public-database-calendar section > header { display: flex; justify-content: space-between; gap: 10px; }
+.public-database-kanban article { margin-top: 10px; border-radius: 10px; padding: 12px; background: white; box-shadow: 0 2px 8px #0f172a0a; }
+.public-database-kanban small, .public-database-gallery small { display: block; margin-top: 5px; color: #64748b; font-size: 12px; }
+.public-database-kanban section > p { color: #94a3b8; font-size: 13px; text-align: center; }
+.public-database-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; padding: 16px; }
+.public-database-gallery article { display: grid; gap: 6px; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; }
+.public-database-gallery article > span { color: #64748b; font-size: 28px; }
+.public-database-calendar { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; padding: 16px; }
+.public-database-calendar section { overflow: hidden; border: 1px solid #e2e8f0; border-radius: 12px; }
+.public-database-calendar section > header { padding: 10px 12px; background: #f8fafc; }
+.public-database-calendar section > div { padding: 10px 12px; border-top: 1px solid #eef2f7; }
+.public-database .empty-state, .public-sheet .empty-state { min-height: 180px; display: grid; place-content: center; color: #64748b; }
 @media (max-width: 600px) {
   .reader-heading--1 { font-size: 1.75rem; }
   .reader-heading--2 { font-size: 1.35rem; }
+  .public-board { height: 420px; }
+  .public-database-gallery, .public-database-calendar { grid-template-columns: 1fr; }
 }
 </style>

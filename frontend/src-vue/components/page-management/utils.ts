@@ -73,8 +73,12 @@ export function roleLabel(value: string | null) {
 
 export async function copyText(value: string) {
   if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value)
-    return
+    try {
+      await navigator.clipboard.writeText(value)
+      return
+    } catch {
+      // HTTP origins can expose the API while rejecting each write.
+    }
   }
   const textarea = document.createElement('textarea')
   textarea.value = value

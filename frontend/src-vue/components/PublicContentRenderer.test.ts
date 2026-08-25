@@ -21,6 +21,10 @@ function mountDocument(plainText: string, content: unknown = {}) {
   return mount(PublicContentRenderer, { props: { contentType: 'DOCUMENT', content, plainText } })
 }
 
+function mountStructured(contentType: 'WHITEBOARD' | 'SPREADSHEET' | 'DATABASE', content: unknown) {
+  return mount(PublicContentRenderer, { props: { contentType, content, plainText: '' } })
+}
+
 describe('PublicContentRenderer content cards', () => {
   it('routes token, JSON and damaged card lines through the locked-down card renderer', () => {
     const token = encodeContentCardToken(createContentCardNode('status', { value: 'DONE', label: '完成' }))
@@ -69,5 +73,86 @@ describe('PublicContentRenderer content cards', () => {
     expect(wrapper.find('script').exists()).toBe(false)
     expect(wrapper.text()).toContain('<script>alert(1)</script>')
     expect(wrapper.find('.public-task--done').exists()).toBe(true)
+  })
+})
+
+describe('PublicContentRenderer structured content', () => {
+  it('opens activeSheetId and allows read-only switching between worksheets', async () => {
+    const wrapper = mountStructured('SPREADSHEET', {
+      type: 'workbook', activeSheetId: 'second', sheets: [
+        { id: 'first', name: '第一张', rows: [['甲']], styles: {}, frozenRows: 0, frozenColumns: 0, hiddenRows: [], hiddenColumns: [], protectedCells: [], dropdowns: {}, filter: '' },
+        { id: 'second', name: '第二张', rows: [['乙']], styles: { '0:0': { bold: true, italic: true, align: 'RIGHT' } }, frozenRows: 0, frozenColumns: 0, hiddenRows: [], hiddenColumns: [], protectedCells: [], dropdowns: {}, filter: '' },
+      ],
+    })
+
+    expect(wrapper.get('.public-sheet-header strong').text()).toBe('第二张')
+    expect(wrapper.get('.public-sheet-table td').text()).toBe('乙')
+    expect(wrapper.get('.public-sheet-table td').attributes('style')).toContain('font-weight: 700')
+    expect(wrapper.get('.public-sheet-table td').attributes('style')).toContain('text-align: right')
+
+    await wrapper.get('button[data-sheet-id="first"]').trigger('click')
+    expect(wrapper.get('.public-sheet-header strong').text()).toBe('第一张')
+    expect(wrapper.get('.public-sheet-table td').text()).toBe('甲')
+  })
+
+  it('retains distinct whiteboard semantics for shapes, text, notes, and arrows', () => {
+    const kinds = ['RECT', 'ELLIPSE', 'STICKY', 'TEXT', 'ARROW']
+    const wrapper = mountStructured('WHITEBOARD', {
+      type: 'whiteboard', viewport: { x: 12, y: 18, zoom: 1.2 },
+      elements: kinds.map((kind, index) => ({ id: kind, kind, x: index * 20, y: index * 15, width: 160, height: kind === 'ARROW' ? 24 : 90, text: kind, color: '#fff4b8' })),
+    })
+
+    for (const kind of kinds) expect(wrapper.find(`[data-kind="${kind}"]`).exists()).toBe(true)
+    expect(wrapper.find('.kind-ellipse').exists()).toBe(true)
+    expect(wrapper.find('.kind-text').exists()).toBe(true)
+    expect(wrapper.find('svg.public-board-arrow line').exists()).toBe(true)
+    expect(wrapper.get('.public-board-surface').attributes('style')).toContain('scale(1.2)')
+  })
+
+  it('respects the saved database view, visible fields, grouping, and ungrouped records', async () => {
+    const fields = [
+      { id: 'name', name: '名称', type: 'TEXT' },
+      { id: 'status', name: '状态', type: 'SELECT', options: ['待处理', '已完成'] },
+      { id: 'date', name: '日期', type: 'DATE' },
+    ]
+    const views = [
+      { id: 'table', name: '表格', type: 'TABLE', filter: '', sortFieldId: null, groupFieldId: null, visibleFieldIds: ['name'] },
+      { id: 'kanban', name: '看板', type: 'KANBAN', filter: '', sortFieldId: null, groupFieldId: 'status', visibleFieldIds: ['name', 'status'] },
+      { id: 'gallery', name: '画廊', type: 'GALLERY', filter: '', sortFieldId: null, groupFieldId: null, visibleFieldIds: ['name'] },
+      { id: 'calendar', name: '日历', type: 'CALENDAR', filter: '', sortFieldId: null, groupFieldId: 'date', visibleFieldIds: ['name', 'date'] },
+    ]
+    const content = {
+      type: 'database', fields, views, activeViewId: 'kanban', view: 'TABLE', filter: '', sortFieldId: null,
+      rows: [
+        { id: 'one', values: { name: '未归类', status: '', date: '' } },
+        { id: 'two', values: { name: '发布', status: '已完成', date: '2026-08-26' } },
+      ],
+    }
+    const wrapper = mountStructured('DATABASE', content)
+
+    expect(wrapper.find('[data-testid="public-database-kanban"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('未分组')
+    expect(wrapper.text()).toContain('未归类')
+    expect(wrapper.find('[data-testid="public-database-table"]').exists()).toBe(false)
+
+    await wrapper.setProps({ content: { ...content, activeViewId: 'gallery' } })
+    expect(wrapper.find('[data-testid="public-database-gallery"]').exists()).toBe(true)
+    await wrapper.setProps({ content: { ...content, activeViewId: 'calendar' } })
+    expect(wrapper.find('[data-testid="public-database-calendar"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('未安排日期')
+    expect(wrapper.text()).toContain('2026-08-26')
+    await wrapper.setProps({ content: { ...content, activeViewId: 'table' } })
+    expect(wrapper.find('[data-testid="public-database-table"]').exists()).toBe(true)
+    expect(wrapper.findAll('th')).toHaveLength(1)
+  })
+
+  it('renders a view-specific empty state instead of falling back to a table', () => {
+    const wrapper = mountStructured('DATABASE', {
+      type: 'database', view: 'GALLERY', filter: '', sortFieldId: null,
+      fields: [{ id: 'title', name: '标题', type: 'TEXT' }], rows: [],
+    })
+    expect(wrapper.find('[data-testid="public-database-gallery"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="public-database-table"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('暂无记录')
   })
 })

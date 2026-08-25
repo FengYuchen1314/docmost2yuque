@@ -13,4 +13,6 @@ app.use(router)
 app.use(vuetify)
 app.mount('#app')
 
-if ('serviceWorker' in navigator && import.meta.env.PROD) window.addEventListener('load', () => void navigator.serviceWorker.register('/sw.js'))
+if ('serviceWorker' in navigator && window.isSecureContext && import.meta.env.PROD) {
+  window.addEventListener('load', () => void navigator.serviceWorker.register('/sw.js').catch(() => undefined))
+}

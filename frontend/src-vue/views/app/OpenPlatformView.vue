@@ -4,6 +4,7 @@ import type { ApiKeyCredential, OAuthClient, WebhookDelivery, WebhookDeliveryPag
 import { messageOf, post } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
 import { useUiStore } from '../../stores/ui'
+import { copyText } from '../../components/page-management/utils'
 
 type PlatformTab = 'keys' | 'oauth' | 'webhooks' | 'docs'
 interface ScopeGroup { title: string; scopes: string[] }
@@ -96,7 +97,7 @@ function revealSecret(title: string, value: string | null, warning: string) {
 }
 function closeSecret() { Object.assign(secret, { open: false, title: '', value: '', warning: '', copied: false }) }
 async function copy(value: string, label = '内容') {
-  try { await navigator.clipboard.writeText(value); ui.notify(`${label}已复制`) } catch { ui.notify('浏览器不允许访问剪贴板，请手动复制', 'error') }
+  try { await copyText(value); ui.notify(`${label}已复制`) } catch { ui.notify('浏览器不允许访问剪贴板，请手动复制', 'error') }
 }
 function toggleScope(target: string[], scope: string) {
   const index = target.indexOf(scope)

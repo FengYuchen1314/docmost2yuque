@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import type { KnowledgeBase } from '../../../src/types'
 import { messageOf, post } from '../../services/api'
 import { useUiStore } from '../../stores/ui'
+import { copyText } from '../page-management/utils'
 
 interface ShareView {
   id: string
@@ -212,11 +213,6 @@ function toLocalInput(value: string | null) { if (!value) return ''; const date 
 function formatTime(value: string) { return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value)) }
 function showToken(token: string) { issuedUrl.value = `${window.location.origin}/s/${encodeURIComponent(token)}`; copied.value = false; copyError.value = '' }
 async function copyToken() { try { await copyText(issuedUrl.value); copied.value = true; copyError.value = '' } catch { copied.value = false; copyError.value = '浏览器未允许自动复制，请手动复制链接' } }
-async function copyText(value: string) {
-  if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(value); return }
-  const field = document.createElement('textarea'); field.value = value; field.readOnly = true; field.style.position = 'fixed'; field.style.opacity = '0'; document.body.append(field); field.select()
-  try { if (!document.execCommand?.('copy')) throw new Error('copy unavailable') } finally { field.remove() }
-}
 </script>
 
 <template>
