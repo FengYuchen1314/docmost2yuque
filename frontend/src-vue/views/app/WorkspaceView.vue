@@ -6,6 +6,7 @@ import { messageOf, post } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
 import { useUiStore } from '../../stores/ui'
 import { ownerTypeLabel, visibilityLabel } from '../../utils/displayLabels'
+import { knowledgeBaseDestination } from '../../utils/knowledgeBaseDestination'
 
 const route=useRoute();const router=useRouter();const session=useSessionStore();const ui=useUiStore();const id=computed(()=>String(route.params.workspaceId))
 const teams=ref<Team[]>([]);const knowledgeBases=ref<KnowledgeBase[]>([]);const tab=ref('knowledge');const dialog=ref(false);const loading=ref(false);const error=ref('')
@@ -48,7 +49,7 @@ async function createTeam(){loading.value=true;try{await post('/api/v1/teams/cre
         <v-btn variant="text" size="small" prepend-icon="mdi-plus" @click="ui.openCreate({kind:'KNOWLEDGE_BASE',workspaceId:id,source:'WORKSPACE'})">新建</v-btn>
       </header>
       <div class="resource-list">
-        <router-link v-for="kb in knowledgeBases" :key="kb.id" :to="`/app/kb/${kb.id}`" class="resource-row">
+        <router-link v-for="kb in knowledgeBases" :key="kb.id" :to="knowledgeBaseDestination(kb)" class="resource-row">
           <span class="resource-icon">{{ kb.icon || '📘' }}</span>
           <span class="resource-copy">
             <strong>{{ kb.name }}</strong>

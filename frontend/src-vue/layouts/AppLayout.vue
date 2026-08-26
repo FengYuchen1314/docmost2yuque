@@ -7,6 +7,7 @@ import CreateResourceDialog from '../components/CreateResourceDialog.vue'
 import { useSessionStore } from '../stores/session'
 import { useUiStore } from '../stores/ui'
 import type { ResourceKind } from '../utils/createResource'
+import { knowledgeBaseDestination } from '../utils/knowledgeBaseDestination'
 import { OFFLINE_QUEUE_EVENT, pendingPageUpdateCount } from '../../src/lib/offline'
 
 interface InstallPromptEvent extends Event {
@@ -212,7 +213,7 @@ async function logout() { await session.logout(); await router.replace('/login')
           <v-btn v-else icon="mdi-plus" class="knowledge-add" variant="text" size="28" aria-label="新建知识库" @click="openCreate('KNOWLEDGE_BASE', 'SIDEBAR_KB')" />
         </div>
         <v-list v-show="knowledgeBasesExpanded" nav density="compact" class="sidebar-list knowledge-list">
-          <v-list-item v-for="kb in session.activeKnowledgeBases" :key="kb.id" :to="`/app/kb/${kb.id}`" :title="kb.name">
+          <v-list-item v-for="kb in session.activeKnowledgeBases" :key="kb.id" :to="knowledgeBaseDestination(kb)" :title="kb.name">
             <template #prepend><span class="knowledge-icon"><span v-if="kb.icon">{{ kb.icon }}</span><v-icon v-else size="16">mdi-book-outline</v-icon></span></template>
             <template #append><v-icon v-if="kb.visibility === 'PRIVATE'" class="knowledge-lock" size="13">mdi-lock-outline</v-icon></template>
           </v-list-item>

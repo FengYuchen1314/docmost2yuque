@@ -6,6 +6,7 @@ import { messageOf, post } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
 import { useUiStore } from '../../stores/ui'
 import type { ResourceKind } from '../../utils/createResource'
+import { knowledgeBaseDestination } from '../../utils/knowledgeBaseDestination'
 import { contentTypePresentation, deduplicateWorkbenchItems } from '../../utils/workbench'
 
 type DashboardReason = Extract<WorkbenchItem['reason'], 'EDITED' | 'VIEWED' | 'FAVORITE' | 'COLLABORATED'>
@@ -62,6 +63,7 @@ const ownerOptions = computed(() => [
   ...session.workspaces.map((workspace) => ({ title: workspace.name, value: workspace.id })),
 ])
 const workspaceById = computed(() => new Map(session.workspaces.map((workspace) => [workspace.id, workspace])))
+const knowledgeBaseById = computed(() => new Map(session.knowledgeBases.map((knowledgeBase) => [knowledgeBase.id, knowledgeBase])))
 const creatorOptions = [
   { title: '所有', value: 'ALL' },
   { title: '我创建的', value: 'ME' },
@@ -240,6 +242,13 @@ function workspaceDestination(workspaceId: string) {
   return `/app/w/${encodeURIComponent(workspaceId)}`
 }
 
+function workbenchKnowledgeBaseDestination(item: WorkbenchItem) {
+  return knowledgeBaseDestination(knowledgeBaseById.value.get(item.knowledgeBaseId) ?? {
+    id: item.knowledgeBaseId,
+    homepagePageId: null,
+  })
+}
+
 function workspaceName(workspaceId: string) {
   return workspaceById.value.get(workspaceId)?.name ?? '未知空间'
 }
@@ -371,7 +380,7 @@ function activityTime(value: string) {
                 </router-link>
               </td>
               <td class="document-owner" :title="`${workspaceName(item.workspaceId)} / ${item.knowledgeBaseName}`">
-                <router-link v-if="workspaceById.has(item.workspaceId)" :to="workspaceDestination(item.workspaceId)">{{ workspaceName(item.workspaceId) }}</router-link><span v-else>{{ workspaceName(item.workspaceId) }}</span><span> / </span><router-link :to="`/app/kb/${item.knowledgeBaseId}`">{{ item.knowledgeBaseName }}</router-link>
+                <router-link v-if="workspaceById.has(item.workspaceId)" :to="workspaceDestination(item.workspaceId)">{{ workspaceName(item.workspaceId) }}</router-link><span v-else>{{ workspaceName(item.workspaceId) }}</span><span> / </span><router-link :to="workbenchKnowledgeBaseDestination(item)">{{ item.knowledgeBaseName }}</router-link>
               </td>
               <td class="document-time"><time :datetime="item.activityAt">{{ activityTime(item.activityAt) }}</time></td>
               <td class="document-actions">

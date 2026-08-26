@@ -162,6 +162,18 @@ describe('DashboardView Yuque workbench', () => {
     expect(wrapper!.text()).toContain('organization-document')
   })
 
+  it('opens a known knowledge base homepage from the owner breadcrumb without changing the document link', async () => {
+    const item = { ...workbenchItem('document/page', 'workspace', '测试知识库'), knowledgeBaseId: 'kb' }
+    vi.mocked(post).mockResolvedValue({ items: [item], nextOffset: 1, hasMore: false })
+    await mountDashboard()
+
+    useSessionStore().knowledgeBases[0]!.homepagePageId = 'homepage#start'
+    await flushPromises()
+
+    expect(wrapper!.get('.document-primary').attributes('href')).toBe('/app/kb/kb/pages/document%2Fpage')
+    expect(wrapper!.get('.document-owner a:last-child').attributes('href')).toBe('/app/kb/kb/pages/homepage%23start')
+  })
+
   it('opens the existing AI writing flow without opening the blank-document dialog', async () => {
     vi.mocked(post).mockResolvedValue(workbenchPage('first', 1, false))
     const { router } = await mountDashboard()
