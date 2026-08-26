@@ -244,9 +244,8 @@ function formatDate(value: string) {
   <div class="page-shell templates-view">
     <header class="page-heading">
       <div>
-        <div class="text-overline text-primary">创作资产</div>
         <h1>模板中心</h1>
-        <p>复用成熟文档与完整知识库结构，内部引用会在创建时自动重映射。</p>
+        <p>从模板快速开始创作。</p>
       </div>
       <v-chip prepend-icon="mdi-domain" variant="tonal" color="primary">{{ currentWorkspaceName }}</v-chip>
     </header>
@@ -300,7 +299,7 @@ function formatDate(value: string) {
         @keydown.space.prevent="openTemplate(template)"
       >
         <div class="template-cover">
-          <v-img v-if="safeImageUrl(template.thumbnail)" :src="safeImageUrl(template.thumbnail) || undefined" height="158" cover>
+          <v-img v-if="safeImageUrl(template.thumbnail)" :src="safeImageUrl(template.thumbnail) || undefined" height="144" cover>
             <template #error><div class="template-cover-fallback"><v-icon size="44">mdi-image-off-outline</v-icon></div></template>
           </v-img>
           <div v-else class="template-cover-fallback">
@@ -421,20 +420,20 @@ function formatDate(value: string) {
 </template>
 
 <style scoped>
-.template-toolbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.templates-view{max-width:1120px;padding-top:42px}.templates-view :deep(.page-heading){margin-bottom:24px}.templates-view :deep(.page-heading h1){font-size:28px;font-weight:650;letter-spacing:-.3px}.templates-view :deep(.page-heading p){margin-top:5px;color:#8a8f8d;font-size:13px}.templates-view :deep(.page-heading>.v-chip){height:28px;border-radius:4px}.templates-view>.section-card.mb-5{border:0!important;border-bottom:1px solid #e7e9e8!important;border-radius:0!important;box-shadow:none!important}.template-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;padding:0 0 15px!important }
 .workspace-filter { flex: 0 1 260px; }
 .search-filter { flex: 1 1 300px; }
-.template-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 18px; }
-.template-card { overflow: hidden; min-height: 332px; }
-.template-cover { height: 158px; position: relative; background: linear-gradient(135deg, rgb(var(--v-theme-primary), .12), rgb(var(--v-theme-secondary), .08)); }
+.template-toolbar :deep(.v-field){border-radius:5px}.template-toolbar :deep(.v-btn){height:38px;border-radius:4px;font-size:13px;letter-spacing:0;text-transform:none}.template-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); gap: 14px; }
+.template-card { overflow: hidden; min-height: 310px;border:1px solid #e7e9e8!important;border-radius:6px!important;box-shadow:none!important;transition:border-color .12s ease,box-shadow .12s ease}.template-card:hover{border-color:#c9cccb!important;box-shadow:0 8px 24px rgba(0,0,0,.06)!important}
+.template-cover { height: 144px; position: relative; background:#f5f7f7; }
 .template-cover-fallback { height: 100%; display: grid; place-items: center; color: rgb(var(--v-theme-primary)); }
-.template-type { position: absolute; left: 14px; bottom: 12px; box-shadow: 0 4px 14px rgba(15, 23, 42, .12); }
-.template-title { margin: 0; font-size: 1.05rem; line-height: 1.4; }
-.template-description { min-height: 44px; margin: 8px 0 16px; color: rgb(var(--v-theme-on-surface), .62); line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.template-meta { display: flex; justify-content: space-between; gap: 12px; color: rgb(var(--v-theme-on-surface), .55); font-size: .76rem; }
+.template-type { position: absolute; left: 10px; bottom: 9px; border-radius:4px!important;box-shadow:none }
+.template-title { margin: 0; font-size: 15px; font-weight:600;line-height: 1.4; }
+.template-description { min-height: 42px; margin: 7px 0 14px; color:#8a8f8d;font-size:13px; line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.template-meta { display: flex; justify-content: space-between; gap: 12px; color:#a6aaa8; font-size: 11px; }
 .template-meta span { display: inline-flex; align-items: center; gap: 4px; }
 .load-more { display: flex; justify-content: center; padding: 28px 0 4px; }
-.dialog-title { display: flex; align-items: center; font-size: 1.2rem; }
+.dialog-title { display: flex; align-items: center; font-size: 17px; }
 .dialog-title > div { display: grid; }
 .detail-summary { display: flex; align-items: flex-start; gap: 16px; }
 .detail-summary p { margin: 5px 0; color: rgb(var(--v-theme-on-surface), .65); line-height: 1.55; }

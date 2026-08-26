@@ -9,9 +9,9 @@ export const vuetify = createVuetify({
       knowledgeLight: {
         dark: false,
         colors: {
-          background: '#f6f7fb', surface: '#ffffff', 'surface-variant': '#eef1f6',
-          primary: '#2563eb', secondary: '#475569', success: '#16a34a',
-          warning: '#d97706', error: '#dc2626', info: '#0891b2',
+          background: '#ffffff', surface: '#ffffff', 'surface-variant': '#f4f5f5',
+          primary: '#2f6feb', secondary: '#646a67', success: '#00b96b',
+          warning: '#d97904', error: '#d33b35', info: '#1685a9',
         },
       },
       knowledgeDark: {
@@ -25,8 +25,8 @@ export const vuetify = createVuetify({
     },
   },
   defaults: {
-    VBtn: { rounded: 'lg', elevation: 0 },
-    VCard: { rounded: 'xl', elevation: 0 },
+    VBtn: { rounded: 'sm', elevation: 0 },
+    VCard: { rounded: 'md', elevation: 0 },
     VTextField: { variant: 'outlined', density: 'comfortable', hideDetails: 'auto' },
     VTextarea: { variant: 'outlined', density: 'comfortable', hideDetails: 'auto' },
     VSelect: { variant: 'outlined', density: 'comfortable', hideDetails: 'auto' },

@@ -230,6 +230,18 @@ function shiftCellRecord<T>(source: Record<string, T>, insertionRow: number): Re
 // Database
 const database = computed(() => normalizeDatabase(props.modelValue))
 const activeView = computed(() => activeDatabaseView(database.value))
+const fieldDialogOpen = ref(false)
+const fieldName = ref('')
+const fieldType = ref('TEXT')
+const fieldOptionsText = ref('')
+const fieldDialogError = ref('')
+const fieldTypeItems = [
+  { title: '文本', value: 'TEXT', icon: 'mdi-format-text' },
+  { title: '数字', value: 'NUMBER', icon: 'mdi-pound' },
+  { title: '单选', value: 'SELECT', icon: 'mdi-form-dropdown' },
+  { title: '日期', value: 'DATE', icon: 'mdi-calendar-blank-outline' },
+  { title: '复选框', value: 'CHECKBOX', icon: 'mdi-checkbox-marked-outline' },
+]
 const visibleFields = computed(() => {
   const ids = activeView.value.visibleFieldIds
   if (!ids.length) return database.value.fields
@@ -283,15 +295,37 @@ function updateActiveView(patch: Partial<DatabaseView>) {
 }
 
 function addField() {
-  const name = prompt('字段名称')?.trim()
-  if (!name) return
-  const field: DatabaseField = { id: createUuid(), name, type: 'TEXT' }
+  fieldName.value = ''
+  fieldType.value = 'TEXT'
+  fieldOptionsText.value = ''
+  fieldDialogError.value = ''
+  fieldDialogOpen.value = true
+}
+
+function createField() {
+  const name = fieldName.value.trim()
+  if (!name) {
+    fieldDialogError.value = '请输入字段名称'
+    return
+  }
+  if (database.value.fields.some((field) => field.name.localeCompare(name, 'zh-CN', { sensitivity: 'accent' }) === 0)) {
+    fieldDialogError.value = '已存在同名字段'
+    return
+  }
+  const field: DatabaseField = { id: createUuid(), name, type: fieldType.value }
+  if (fieldType.value === 'SELECT') field.options = normalizedFieldOptions(fieldOptionsText.value)
   const model: DatabaseModel = {
     ...database.value,
     fields: [...database.value.fields, field],
     views: database.value.views.map((view) => ({ ...view, visibleFieldIds: view.visibleFieldIds.length ? [...view.visibleFieldIds, field.id] : [] })),
   }
   save(activateDatabaseView(model, model.views.find((view) => view.id === model.activeViewId) ?? model.views[0]!))
+  fieldDialogOpen.value = false
+}
+
+function normalizedFieldOptions(value: string) {
+  const values = value.split(/[\n,，]/).map((item) => item.trim()).filter(Boolean)
+  return [...new Set(values)].slice(0, 50)
 }
 
 function addRow() {
@@ -322,22 +356,24 @@ function secondaryFields(): DatabaseField[] {
 
 <template>
   <div v-if="type === 'WHITEBOARD'" class="structured-editor board-wrap">
-    <v-toolbar density="compact" color="surface" flat border="bottom" class="editor-control-bar px-3">
-      <v-btn-toggle v-model="boardTool" mandatory color="primary" density="compact">
-        <v-btn value="PAN" prepend-icon="mdi-hand-back-right-outline">平移</v-btn>
-        <v-btn value="STICKY" prepend-icon="mdi-note-outline">便签</v-btn>
-        <v-btn value="RECT" prepend-icon="mdi-rectangle-outline">矩形</v-btn>
-        <v-btn value="ELLIPSE" prepend-icon="mdi-circle-outline">椭圆</v-btn>
-        <v-btn value="TEXT" prepend-icon="mdi-format-text">文本</v-btn>
-        <v-btn value="ARROW" prepend-icon="mdi-arrow-right">箭头</v-btn>
+    <v-toolbar height="42" color="surface" flat class="editor-control-bar">
+      <v-btn-toggle v-model="boardTool" mandatory color="primary" density="compact" class="tool-segment">
+        <v-btn value="PAN" size="small" prepend-icon="mdi-hand-back-right-outline">平移</v-btn>
+        <v-btn value="STICKY" size="small" prepend-icon="mdi-note-outline">便签</v-btn>
+        <v-btn value="RECT" size="small" prepend-icon="mdi-rectangle-outline">矩形</v-btn>
+        <v-btn value="ELLIPSE" size="small" prepend-icon="mdi-circle-outline">椭圆</v-btn>
+        <v-btn value="TEXT" size="small" prepend-icon="mdi-format-text">文本</v-btn>
+        <v-btn value="ARROW" size="small" prepend-icon="mdi-arrow-right">箭头</v-btn>
       </v-btn-toggle>
-      <v-divider vertical class="mx-3" />
-      <v-btn data-testid="add-board" prepend-icon="mdi-plus" :disabled="boardTool === 'PAN'" @click="addBoard">添加</v-btn>
-      <v-btn v-if="selectedElementId" data-testid="delete-board" color="error" variant="text" prepend-icon="mdi-trash-can-outline" @click="removeBoardElement">删除</v-btn>
+      <v-divider vertical class="tool-divider" />
+      <v-btn data-testid="add-board" class="tool-button" size="small" variant="text" prepend-icon="mdi-plus" :disabled="boardTool === 'PAN'" @click="addBoard">添加</v-btn>
+      <v-btn v-if="selectedElementId" data-testid="delete-board" class="tool-button" size="small" color="error" variant="text" icon="mdi-trash-can-outline" aria-label="删除所选白板元素" title="删除" @click="removeBoardElement" />
       <v-spacer />
-      <v-btn data-testid="zoom-out" aria-label="缩小白板" icon="mdi-minus" @click="setBoardZoom(board.viewport.zoom - 0.1)" />
-      <span class="text-caption mx-2">{{ Math.round(board.viewport.zoom * 100) }}%</span>
-      <v-btn data-testid="zoom-in" aria-label="放大白板" icon="mdi-plus" @click="setBoardZoom(board.viewport.zoom + 0.1)" />
+      <div class="zoom-control" aria-label="白板缩放">
+        <v-btn data-testid="zoom-out" aria-label="缩小白板" icon="mdi-minus" size="small" variant="text" @click="setBoardZoom(board.viewport.zoom - 0.1)" />
+        <span>{{ Math.round(board.viewport.zoom * 100) }}%</span>
+        <v-btn data-testid="zoom-in" aria-label="放大白板" icon="mdi-plus" size="small" variant="text" @click="setBoardZoom(board.viewport.zoom + 0.1)" />
+      </div>
     </v-toolbar>
     <div
       class="board-canvas"
@@ -387,15 +423,16 @@ function secondaryFields(): DatabaseField[] {
   </div>
 
   <div v-else-if="type === 'SPREADSHEET'" class="structured-editor sheet-wrap">
-    <v-toolbar density="compact" color="surface" flat border="bottom" class="editor-control-bar px-3">
-      <v-btn data-testid="cell-bold" aria-label="加粗当前单元格" icon="mdi-format-bold" :color="selectedCellStyle.bold ? 'primary' : undefined" @click="patchCellStyle({ bold: !selectedCellStyle.bold })" />
-      <v-btn data-testid="cell-italic" aria-label="斜体当前单元格" icon="mdi-format-italic" :color="selectedCellStyle.italic ? 'primary' : undefined" @click="patchCellStyle({ italic: !selectedCellStyle.italic })" />
-      <v-btn data-testid="cell-align" :aria-label="`切换对齐方式，当前${selectedCellStyle.align || 'LEFT'}`" icon="mdi-format-align-left" :title="`当前对齐：${selectedCellStyle.align || 'LEFT'}`" @click="cycleCellAlignment" />
-      <v-divider vertical class="mx-2" />
-      <v-btn data-testid="insert-row" prepend-icon="mdi-table-row-plus-after" @click="insertSheetRow">在下方插入行</v-btn>
-      <span class="sheet-selection ml-3">{{ columnName(selectedCell.column) }}{{ selectedCell.row + 1 }}</span>
+    <v-toolbar height="42" color="surface" flat class="editor-control-bar">
+      <span class="sheet-selection">{{ columnName(selectedCell.column) }}{{ selectedCell.row + 1 }}</span>
+      <v-divider vertical class="tool-divider" />
+      <v-btn data-testid="cell-bold" class="tool-button" size="small" variant="text" aria-label="加粗当前单元格" icon="mdi-format-bold" :color="selectedCellStyle.bold ? 'primary' : undefined" @click="patchCellStyle({ bold: !selectedCellStyle.bold })" />
+      <v-btn data-testid="cell-italic" class="tool-button" size="small" variant="text" aria-label="斜体当前单元格" icon="mdi-format-italic" :color="selectedCellStyle.italic ? 'primary' : undefined" @click="patchCellStyle({ italic: !selectedCellStyle.italic })" />
+      <v-btn data-testid="cell-align" class="tool-button" size="small" variant="text" :aria-label="`切换对齐方式，当前${selectedCellStyle.align || 'LEFT'}`" icon="mdi-format-align-left" :title="`当前对齐：${selectedCellStyle.align || 'LEFT'}`" @click="cycleCellAlignment" />
+      <v-divider vertical class="tool-divider" />
+      <v-btn data-testid="insert-row" class="tool-button" size="small" variant="text" icon="mdi-table-row-plus-after" aria-label="在下方插入行" title="在下方插入行" @click="insertSheetRow" />
       <v-spacer />
-      <v-chip size="small" variant="tonal">{{ sheet.name }}</v-chip>
+      <span class="sheet-name">{{ sheet.name }}</span>
     </v-toolbar>
     <div class="sheet-scroll">
       <table><thead><tr><th class="corner" /><th v-for="column in sheetColumns" :key="column">{{ columnName(column) }}</th></tr></thead>
@@ -417,18 +454,18 @@ function secondaryFields(): DatabaseField[] {
   </div>
 
   <div v-else class="structured-editor database-wrap">
-    <v-toolbar density="compact" color="surface" flat border="bottom" class="editor-control-bar px-3">
-      <v-btn-toggle :model-value="activeView.type" mandatory color="primary" density="compact" @update:model-value="selectDatabaseView">
-        <v-btn value="TABLE" prepend-icon="mdi-table">表格</v-btn>
-        <v-btn value="KANBAN" prepend-icon="mdi-view-column-outline">看板</v-btn>
-        <v-btn value="GALLERY" prepend-icon="mdi-view-grid-outline">画廊</v-btn>
-        <v-btn value="CALENDAR" prepend-icon="mdi-calendar-outline">日历</v-btn>
+    <v-toolbar height="42" color="surface" flat class="editor-control-bar">
+      <v-btn-toggle :model-value="activeView.type" mandatory color="primary" density="compact" class="tool-segment" @update:model-value="selectDatabaseView">
+        <v-btn value="TABLE" size="small" prepend-icon="mdi-table">表格</v-btn>
+        <v-btn value="KANBAN" size="small" prepend-icon="mdi-view-column-outline">看板</v-btn>
+        <v-btn value="GALLERY" size="small" prepend-icon="mdi-view-grid-outline">画廊</v-btn>
+        <v-btn value="CALENDAR" size="small" prepend-icon="mdi-calendar-outline">日历</v-btn>
       </v-btn-toggle>
-      <v-divider vertical class="mx-3" />
-      <v-text-field :model-value="activeView.filter" placeholder="筛选当前视图" prepend-inner-icon="mdi-filter-outline" max-width="260" hide-details @update:model-value="updateActiveView({ filter: String($event ?? '') })" />
+      <v-divider vertical class="tool-divider" />
+      <v-text-field class="database-filter" :model-value="activeView.filter" placeholder="筛选记录" prepend-inner-icon="mdi-filter-outline" density="compact" variant="solo-filled" flat hide-details @update:model-value="updateActiveView({ filter: String($event ?? '') })" />
       <v-spacer />
-      <v-btn data-testid="add-field" prepend-icon="mdi-table-column-plus-after" @click="addField">字段</v-btn>
-      <v-btn data-testid="add-row" color="primary" prepend-icon="mdi-plus" @click="addRow">记录</v-btn>
+      <v-btn data-testid="add-field" class="tool-button" size="small" variant="text" prepend-icon="mdi-table-column-plus-after" @click="addField">字段</v-btn>
+      <v-btn data-testid="add-row" class="record-button" size="small" color="primary" variant="tonal" prepend-icon="mdi-plus" @click="addRow">记录</v-btn>
     </v-toolbar>
 
     <div v-if="activeView.type === 'TABLE'" class="database-table" data-testid="database-table-view">
@@ -455,9 +492,254 @@ function secondaryFields(): DatabaseField[] {
       <section v-for="group in calendarGroups" :key="group.day" class="calendar-day"><header><v-icon size="18">mdi-calendar-blank-outline</v-icon><strong>{{ group.day }}</strong><v-chip size="x-small">{{ group.rows.length }}</v-chip></header><div v-for="row in group.rows" :key="row.id" class="calendar-record">{{ rowTitle(row) }}</div></section>
       <div v-if="!visibleDatabaseRows.length" class="database-empty"><v-icon>mdi-calendar-remove-outline</v-icon><p>{{ activeView.filter ? '没有符合筛选条件的记录' : '暂无日历记录' }}</p></div>
     </div>
+
+    <v-dialog v-model="fieldDialogOpen" max-width="420">
+      <v-card class="field-dialog" rounded="lg">
+        <v-card-title class="field-dialog-title">
+          <span>新建字段</span>
+          <v-btn icon="mdi-close" size="small" variant="text" aria-label="关闭字段设置" @click="fieldDialogOpen = false" />
+        </v-card-title>
+        <v-card-text class="field-dialog-body">
+          <v-text-field
+            v-model="fieldName"
+            data-testid="field-name"
+            label="字段名称"
+            placeholder="例如：负责人"
+            maxlength="80"
+            autofocus
+            variant="outlined"
+            density="comfortable"
+            hide-details
+            @keydown.enter.prevent="createField"
+          />
+          <v-select
+            v-model="fieldType"
+            data-testid="field-type"
+            :items="fieldTypeItems"
+            label="字段类型"
+            variant="outlined"
+            density="comfortable"
+            hide-details
+          >
+            <template #item="{ props: itemProps, item }">
+              <v-list-item v-bind="itemProps" :prepend-icon="item.raw.icon" />
+            </template>
+          </v-select>
+          <v-textarea
+            v-if="fieldType === 'SELECT'"
+            v-model="fieldOptionsText"
+            data-testid="field-options"
+            label="选项"
+            placeholder="每行一个选项，也可使用逗号分隔"
+            variant="outlined"
+            density="comfortable"
+            rows="3"
+            auto-grow
+            hide-details
+          />
+          <p v-if="fieldDialogError" class="field-dialog-error" role="alert">{{ fieldDialogError }}</p>
+        </v-card-text>
+        <v-card-actions class="field-dialog-actions">
+          <v-spacer />
+          <v-btn size="small" variant="text" @click="fieldDialogOpen = false">取消</v-btn>
+          <v-btn data-testid="confirm-add-field" size="small" color="primary" variant="flat" :disabled="!fieldName.trim()" @click="createField">创建</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
 <style scoped>
-.structured-editor{height:100%;min-height:0;background:#f8fafc;overflow:hidden}.editor-control-bar{overflow-x:auto}.board-canvas{height:calc(100% - 48px);position:relative;overflow:hidden;background-color:#f8fafc;background-image:radial-gradient(#cbd5e1 1px,transparent 1px);background-size:20px 20px;touch-action:none}.board-canvas.is-panning{cursor:grab}.board-canvas.is-panning:active{cursor:grabbing}.board-surface{position:absolute;left:0;top:0;width:4000px;height:2400px;transform-origin:0 0}.board-item{position:absolute;border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 8px 20px #0f172a12;touch-action:none}.board-item.selected{outline:2px solid #2563eb;outline-offset:2px}.board-item.kind-ellipse{border-radius:999px}.board-item.kind-text{border-color:transparent;box-shadow:none}.board-item textarea{width:100%;height:100%;border:0;background:transparent;resize:none;outline:0;padding:14px;text-align:inherit}.board-arrow{overflow:visible;border:0;box-shadow:none}.board-arrow line{stroke:#475569;stroke-width:2}.board-arrow path{fill:#475569}.sheet-scroll,.database-table{height:calc(100% - 96px);overflow:auto}.sheet-wrap table,.database-wrap table{border-collapse:separate;border-spacing:0;min-width:max-content}.sheet-wrap th,.sheet-wrap td,.database-wrap th,.database-wrap td{border-right:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;background:white}.sheet-wrap th{min-width:96px;height:32px;background:#f1f5f9;color:#64748b;font-size:12px;position:sticky;top:0;z-index:2}.sheet-wrap tbody th{left:0;min-width:42px;position:sticky;z-index:3}.sheet-wrap td.selected{box-shadow:inset 0 0 0 2px #2563eb}.sheet-wrap input{width:96px;height:34px;border:0;outline:0;padding:5px 8px;background:transparent;font:inherit;color:inherit;text-align:inherit}.sheet-tabs{height:48px;display:flex;align-items:center;border-top:1px solid #e2e8f0;background:white;padding:0 12px;overflow-x:auto}.sheet-selection{font-size:12px;color:#64748b;font-variant-numeric:tabular-nums}.database-wrap th{min-width:180px;padding:12px;text-align:left;position:sticky;top:0;z-index:1}.database-wrap th small{display:block;color:#94a3b8}.database-wrap td{padding:0 10px}.database-wrap td input{width:100%;min-height:44px;border:0;outline:0}.database-empty{min-height:240px;display:grid;place-content:center;justify-items:center;color:#64748b;grid-column:1/-1}.database-empty p{margin-top:10px}.kanban{display:grid;grid-auto-flow:column;grid-auto-columns:280px;gap:16px;padding:20px;height:calc(100% - 48px);overflow:auto}.kanban-column{padding:14px;border:1px solid #e2e8f0;border-radius:14px;background:#f1f5f9}.kanban-column>header{display:flex;align-items:center;justify-content:space-between}.kanban-column small{display:block;margin-top:7px;color:#64748b}.column-empty{padding:28px 0;text-align:center;color:#94a3b8;font-size:13px}.database-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;padding:20px;height:calc(100% - 48px);overflow:auto}.gallery-card{overflow:hidden}.gallery-cover{height:110px;display:grid;place-content:center;background:linear-gradient(135deg,#eff6ff,#f8fafc);color:#64748b}.gallery-card p{margin:8px 0 0;color:#64748b;font-size:13px}.database-calendar{display:grid;align-content:start;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;padding:20px;height:calc(100% - 48px);overflow:auto}.calendar-day{border:1px solid #e2e8f0;border-radius:14px;background:white;overflow:hidden}.calendar-day>header{display:flex;align-items:center;gap:8px;padding:12px 14px;background:#f8fafc}.calendar-day>header .v-chip{margin-left:auto}.calendar-record{padding:12px 14px;border-top:1px solid #eef2f7}@media(max-width:800px){.editor-control-bar{padding-inline:4px!important}.kanban{grid-auto-columns:240px}.database-gallery,.database-calendar{grid-template-columns:1fr}}
+.structured-editor {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: #f7f8fa;
+  color: #262626;
+}
+
+.editor-control-bar {
+  height: 42px !important;
+  min-height: 42px !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-bottom: 1px solid #e7e9e8;
+  background: #fff !important;
+  box-shadow: none !important;
+  scrollbar-width: none;
+}
+.editor-control-bar::-webkit-scrollbar { display: none; }
+.editor-control-bar :deep(.v-toolbar__content) {
+  height: 42px !important;
+  min-height: 42px !important;
+  gap: 2px;
+  padding: 0 8px;
+}
+.editor-control-bar :deep(.v-btn) {
+  height: 30px;
+  min-width: 30px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.editor-control-bar :deep(.v-btn--icon) { width: 30px; }
+.editor-control-bar :deep(.v-btn__overlay) { opacity: 0; }
+.editor-control-bar :deep(.v-btn:hover) { background: #f1f2f2; }
+.editor-control-bar :deep(.v-btn--disabled) { opacity: .38; }
+
+.tool-segment {
+  height: 32px;
+  flex: 0 0 auto;
+  gap: 1px;
+  padding: 1px;
+  border: 0;
+  border-radius: 7px;
+  background: #f5f5f5;
+}
+.tool-segment :deep(.v-btn) { padding-inline: 9px; }
+.tool-segment :deep(.v-btn--active) {
+  color: #2468f2;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(31 35 41 / 8%);
+}
+.tool-divider {
+  height: 20px;
+  align-self: center;
+  margin: 0 6px;
+  color: #e7e9e8;
+  opacity: 1;
+}
+.tool-button { flex: 0 0 auto; }
+.record-button {
+  flex: 0 0 auto;
+  margin-left: 2px;
+  padding-inline: 10px;
+}
+.zoom-control {
+  display: flex;
+  height: 30px;
+  align-items: center;
+  flex: 0 0 auto;
+  border: 1px solid #e7e9e8;
+  border-radius: 7px;
+  background: #fff;
+}
+.zoom-control span {
+  min-width: 44px;
+  color: #646a73;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.zoom-control :deep(.v-btn) { width: 28px; height: 28px; min-width: 28px; }
+
+.board-canvas {
+  position: relative;
+  height: calc(100% - 42px);
+  overflow: hidden;
+  background-color: #f7f8fa;
+  background-image: radial-gradient(#c9ced6 1px, transparent 1px);
+  background-size: 20px 20px;
+  touch-action: none;
+}
+.board-canvas.is-panning { cursor: grab; }
+.board-canvas.is-panning:active { cursor: grabbing; }
+.board-surface { position: absolute; top: 0; left: 0; width: 4000px; height: 2400px; transform-origin: 0 0; }
+.board-item { position: absolute; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 8px 20px #0f172a12; touch-action: none; }
+.board-item.selected { outline: 2px solid #2468f2; outline-offset: 2px; }
+.board-item.kind-ellipse { border-radius: 999px; }
+.board-item.kind-text { border-color: transparent; box-shadow: none; }
+.board-item textarea { width: 100%; height: 100%; border: 0; outline: 0; padding: 14px; resize: none; background: transparent; text-align: inherit; }
+.board-arrow { overflow: visible; border: 0; box-shadow: none; }
+.board-arrow line { stroke: #475569; stroke-width: 2; }
+.board-arrow path { fill: #475569; }
+
+.sheet-selection {
+  display: inline-flex;
+  width: 54px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 54px;
+  border: 1px solid #e7e9e8;
+  border-radius: 6px;
+  color: #646a73;
+  background: #fff;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.sheet-name {
+  overflow: hidden;
+  max-width: 180px;
+  margin: 0 6px;
+  color: #646a73;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sheet-scroll { height: calc(100% - 84px); overflow: auto; }
+.sheet-wrap table,
+.database-wrap table { min-width: max-content; border-spacing: 0; border-collapse: separate; }
+.sheet-wrap th,
+.sheet-wrap td,
+.database-wrap th,
+.database-wrap td { border-right: 1px solid #e7e9e8; border-bottom: 1px solid #e7e9e8; background: #fff; }
+.sheet-wrap th { position: sticky; top: 0; z-index: 2; min-width: 96px; height: 32px; color: #8a8f8d; background: #f7f8fa; font-size: 12px; font-weight: 500; }
+.sheet-wrap tbody th { position: sticky; left: 0; z-index: 3; min-width: 42px; }
+.sheet-wrap td.selected { box-shadow: inset 0 0 0 2px #2468f2; }
+.sheet-wrap input { width: 96px; height: 34px; border: 0; outline: 0; padding: 5px 8px; background: transparent; color: inherit; font: inherit; text-align: inherit; }
+.sheet-tabs { display: flex; height: 42px; align-items: center; overflow-x: auto; border-top: 1px solid #e7e9e8; padding: 0 8px; background: #fff; }
+.sheet-tabs :deep(.v-btn) { height: 30px; border-radius: 6px; font-size: 12px; letter-spacing: 0; text-transform: none; }
+
+.database-filter {
+  width: 210px;
+  max-width: 210px;
+  flex: 0 0 210px;
+}
+.database-filter :deep(.v-field) {
+  min-height: 30px;
+  border-radius: 6px;
+  background: #f5f5f5;
+  box-shadow: none;
+}
+.database-filter :deep(.v-field__input) { min-height: 30px; padding-block: 0; font-size: 12px; }
+.database-filter :deep(.v-field__prepend-inner) { padding-top: 3px; }
+.database-table { height: calc(100% - 42px); overflow: auto; }
+.database-wrap th { position: sticky; top: 0; z-index: 1; min-width: 180px; height: 46px; padding: 6px 12px; background: #f7f8fa; text-align: left; }
+.database-wrap th small { display: block; color: #9aa0a8; font-size: 11px; font-weight: 400; }
+.database-wrap td { padding: 0 10px; }
+.database-wrap td input { width: 100%; min-height: 42px; border: 0; outline: 0; }
+.database-empty { display: grid; min-height: 240px; place-content: center; justify-items: center; grid-column: 1/-1; color: #8a8f8d; }
+.database-empty p { margin-top: 10px; }
+.kanban { display: grid; height: calc(100% - 42px); grid-auto-columns: 280px; grid-auto-flow: column; gap: 16px; overflow: auto; padding: 20px; }
+.kanban-column { border: 1px solid #e7e9e8; border-radius: 10px; padding: 14px; background: #f5f6f7; }
+.kanban-column > header { display: flex; align-items: center; justify-content: space-between; }
+.kanban-column small { display: block; margin-top: 7px; color: #646a73; }
+.column-empty { padding: 28px 0; color: #9aa0a8; font-size: 13px; text-align: center; }
+.database-gallery { display: grid; height: calc(100% - 42px); grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; overflow: auto; padding: 20px; }
+.gallery-card { overflow: hidden; }
+.gallery-cover { display: grid; height: 110px; place-content: center; color: #646a73; background: linear-gradient(135deg, #f1f5ff, #f7f8fa); }
+.gallery-card p { margin: 8px 0 0; color: #646a73; font-size: 13px; }
+.database-calendar { display: grid; height: calc(100% - 42px); align-content: start; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; overflow: auto; padding: 20px; }
+.calendar-day { overflow: hidden; border: 1px solid #e7e9e8; border-radius: 10px; background: #fff; }
+.calendar-day > header { display: flex; align-items: center; gap: 8px; padding: 12px 14px; background: #f7f8fa; }
+.calendar-day > header .v-chip { margin-left: auto; }
+.calendar-record { border-top: 1px solid #eef0f2; padding: 12px 14px; }
+
+.field-dialog { overflow: hidden; border: 1px solid #e7e9e8; box-shadow: 0 16px 48px rgb(31 35 41 / 16%) !important; }
+.field-dialog-title { display: flex; height: 50px; align-items: center; justify-content: space-between; border-bottom: 1px solid #eef0f2; padding: 0 12px 0 18px; font-size: 16px; font-weight: 600; }
+.field-dialog-body { display: grid; gap: 16px; padding: 20px 18px 14px !important; }
+.field-dialog-error { margin: -6px 0 0; color: rgb(var(--v-theme-error)); font-size: 12px; }
+.field-dialog-actions { border-top: 1px solid #eef0f2; padding: 10px 14px !important; }
+
+@media (max-width: 800px) {
+  .editor-control-bar :deep(.v-toolbar__content) { padding-inline: 4px; }
+  .tool-segment :deep(.v-btn) { padding-inline: 7px; }
+  .database-filter { width: 150px; max-width: 150px; flex-basis: 150px; }
+  .kanban { grid-auto-columns: 240px; }
+  .database-gallery,
+  .database-calendar { grid-template-columns: 1fr; }
+}
 </style>

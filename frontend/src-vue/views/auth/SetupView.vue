@@ -27,13 +27,14 @@ async function submit() {
 
 <template>
   <AuthLayout eyebrow="首次部署" title="创建实例管理员" description="第一个邮箱账号将成为实例管理员，无需邮件验证。">
-    <v-form @submit.prevent="submit">
-      <v-text-field v-model="form.email" label="管理员邮箱" type="email" autocomplete="email" prepend-inner-icon="mdi-email-outline" required class="mb-4" />
-      <v-text-field v-model="form.workspaceName" label="首个工作区名称" prepend-inner-icon="mdi-domain" required class="mb-4" />
-      <v-text-field v-model="form.password" label="密码" type="password" autocomplete="new-password" hint="至少 12 位" persistent-hint prepend-inner-icon="mdi-lock-outline" required class="mb-4" />
-      <v-text-field v-model="form.passwordConfirmation" label="确认密码" type="password" autocomplete="new-password" prepend-inner-icon="mdi-lock-check-outline" required class="mb-4" />
-      <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert>
-      <v-btn type="submit" color="primary" size="large" block :loading="loading" :disabled="form.password.length < 12 || form.password !== form.passwordConfirmation">创建并进入</v-btn>
+    <v-form class="auth-form-stack" @submit.prevent="submit">
+      <div class="auth-notice">首个管理员邮箱无需验证，创建后会直接进入工作区。</div>
+      <v-text-field v-model="form.email" class="auth-field" label="管理员邮箱" type="email" autocomplete="email" variant="outlined" density="compact" required />
+      <v-text-field v-model="form.workspaceName" class="auth-field" label="首个工作区名称" autocomplete="organization" variant="outlined" density="compact" required />
+      <v-text-field v-model="form.password" class="auth-field" label="密码" type="password" autocomplete="new-password" hint="至少 12 位" persistent-hint variant="outlined" density="compact" required />
+      <v-text-field v-model="form.passwordConfirmation" class="auth-field" label="确认密码" type="password" autocomplete="new-password" variant="outlined" density="compact" required />
+      <v-alert v-if="error" type="error" variant="tonal" density="compact" class="auth-alert">{{ error }}</v-alert>
+      <v-btn type="submit" class="auth-primary" size="large" block :loading="loading" :disabled="form.password.length < 12 || form.password !== form.passwordConfirmation">创建并进入</v-btn>
     </v-form>
   </AuthLayout>
 </template>

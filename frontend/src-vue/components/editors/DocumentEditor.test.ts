@@ -118,6 +118,40 @@ describe('DocumentEditor', () => {
     expect(lastUpdate(wrapper)).toBe('# 接口说明\n```ts\nconst answer = 42\n```')
   })
 
+  it('keeps the 42px toolbar and an empty outline mounted as stable editor geometry', async () => {
+    const wrapper = mountEditor('', { title: '空文稿', showOutline: true })
+
+    const toolbar = wrapper.findComponent({ name: 'VToolbar' })
+    expect(toolbar.exists()).toBe(true)
+    expect(Number(toolbar.props('height'))).toBe(42)
+
+    const outline = wrapper.get('aside[aria-label="文稿大纲"]')
+    expect(outline.text()).toContain('暂无标题')
+
+    await wrapper.setProps({ modelValue: '# 第一节' })
+    await nextTick()
+    expect(wrapper.get('aside[aria-label="文稿大纲"]').text()).toContain('第一节')
+
+    await wrapper.setProps({ modelValue: '' })
+    await nextTick()
+    expect(wrapper.get('aside[aria-label="文稿大纲"]').text()).toContain('暂无标题')
+  })
+
+  it('synchronizes the in-document title in both directions without coupling it to body Markdown', async () => {
+    const wrapper = mountEditor('正文', { title: '父级标题' })
+    const title = wrapper.get<HTMLTextAreaElement>('textarea[aria-label="文稿标题"]')
+
+    expect(title.element.value).toBe('父级标题')
+    await title.setValue('正文内标题')
+    expect(wrapper.emitted('update:title')?.at(-1)?.[0]).toBe('正文内标题')
+    expect(lastUpdate(wrapper)).toBeUndefined()
+
+    await wrapper.setProps({ title: '服务端标题' })
+    await nextTick()
+    expect(wrapper.get<HTMLTextAreaElement>('textarea[aria-label="文稿标题"]').element.value).toBe('服务端标题')
+    expect(wrapper.get<HTMLTextAreaElement>('textarea.block-input').element.value).toBe('正文')
+  })
+
   it('exposes focus and slash-replacing insertion for reference and content-card integrations', async () => {
     const wrapper = mountEditor('段落/')
     const input = wrapper.get<HTMLTextAreaElement>('textarea.block-input')
@@ -153,6 +187,7 @@ function mountEditor(modelValue: string, extraProps: Record<string, unknown> = {
       modelValue,
       ...extraProps,
       'onUpdate:modelValue': (value: string) => { void wrapper.setProps({ modelValue: value }) },
+      'onUpdate:title': (value: string) => { void wrapper.setProps({ title: value }) },
     },
     global: { plugins: [vuetify] },
     attachTo: document.body,

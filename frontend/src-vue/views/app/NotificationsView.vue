@@ -183,8 +183,7 @@ function relativeTime(value: string) {
   <div class="page-shell notifications-page">
     <header class="page-heading">
       <div>
-        <div class="eyebrow">消息中心</div>
-        <h1>与你有关的动态</h1>
+        <h1>消息</h1>
         <p>提及、评论、邀请和审批集中在这里。</p>
       </div>
       <v-btn
@@ -306,27 +305,30 @@ function relativeTime(value: string) {
 </template>
 
 <style scoped>
-.notifications-page { max-width: 1040px; }
-.eyebrow { margin-bottom: 6px; color: rgb(var(--v-theme-primary)); font-size: .74rem; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
-.filter-card { padding: 12px 16px; }
+.notifications-page { max-width: 920px; padding-top: 42px; }
+.notifications-page :deep(.page-heading) { margin-bottom: 24px; }
+.notifications-page :deep(.page-heading h1) { font-size: 28px; font-weight: 650; letter-spacing: -.3px; }
+.notifications-page :deep(.page-heading p) { margin-top: 5px; color: #8a8f8d; font-size: 13px; }
+.notifications-page :deep(.page-heading .v-btn) { height: 32px; border-radius: 5px; letter-spacing: 0; text-transform: none; }
+.filter-card { border: 0 !important; border-bottom: 1px solid #e7e9e8 !important; border-radius: 0 !important; padding: 5px 0 12px; box-shadow: none !important; }
 .filter-row { display: flex; align-items: center; gap: 14px; min-height: 44px; }
 .filter-divider { height: 28px; align-self: center; }
-.result-count { flex: 0 0 auto; color: rgb(var(--v-theme-on-surface-variant)); font-size: .82rem; white-space: nowrap; }
-.result-count strong { color: rgb(var(--v-theme-on-surface)); }
-.notification-card { overflow: hidden; min-height: 280px; }
-.notification-list { padding: 8px; }
-.notification-item { position: relative; display: flex; width: 100%; align-items: center; gap: 14px; border: 0; border-radius: 12px; padding: 15px 14px; background: transparent; color: inherit; text-align: left; cursor: pointer; transition: background-color .16s ease, transform .16s ease; }
-.notification-item:hover { background: rgba(var(--v-theme-primary), .055); }
+.filter-row :deep(.v-btn),.filter-row :deep(.v-chip){height:30px;border-radius:4px;font-size:13px;letter-spacing:0;text-transform:none}.result-count { flex: 0 0 auto; color: #8a8f8d; font-size: 12px; white-space: nowrap; }
+.result-count strong { color: #585a59; }
+.notification-card { overflow: hidden; min-height: 280px; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; }
+.notification-list { padding: 0; }
+.notification-item { position: relative; display: flex; width: 100%; min-height:76px; align-items: center; gap: 12px; border: 0; border-radius: 4px; padding: 12px 10px; background: transparent; color: inherit; text-align: left; cursor: pointer; transition: background-color .12s ease; }
+.notification-item:hover { background: #f6f7f7; }
 .notification-item:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: -2px; }
 .notification-item + .notification-item::before { position: absolute; top: 0; right: 14px; left: 70px; height: 1px; background: rgba(var(--v-border-color), var(--v-border-opacity)); content: ''; }
-.notification-item.unread { background: rgba(var(--v-theme-primary), .035); }
+.notification-item.unread { background: #f7faff; }
 .notification-item.unread .notification-title { font-weight: 750; }
 .unread-marker { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 999px; background: transparent; }
-.unread .unread-marker { background: rgb(var(--v-theme-primary)); box-shadow: 0 0 0 3px rgba(var(--v-theme-primary), .12); }
+.unread .unread-marker { background: #2f6feb; box-shadow: none; }
 .notification-avatar { flex: 0 0 auto; }
 .notification-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 3px; }
-.notification-title { display: flex; align-items: center; gap: 7px; font-size: .94rem; font-weight: 620; }
-.notification-summary { overflow: hidden; color: rgb(var(--v-theme-on-surface-variant)); font-size: .88rem; text-overflow: ellipsis; white-space: nowrap; }
+.notification-title { display: flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 600; }
+.notification-summary { overflow: hidden; color: #585a59; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .notification-copy time { color: rgb(var(--v-theme-on-surface-variant)); font-size: .75rem; opacity: .8; }
 .notification-chevron { color: rgb(var(--v-theme-on-surface-variant)); opacity: .7; }
 .load-more { display: flex; justify-content: center; padding: 18px 12px 14px; }

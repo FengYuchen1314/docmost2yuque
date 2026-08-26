@@ -29,17 +29,19 @@ async function submit() {
 </script>
 
 <template>
-  <AuthLayout :eyebrow="step === 'account' ? '公开注册' : '邮箱验证'" :title="step === 'account' ? '创建账号' : '验证邮箱'" :description="step === 'account' ? '邮箱是唯一账号名称，注册后会创建个人工作区。' : `验证码已发送至 ${form.email}`">
-    <v-form @submit.prevent="submit">
+  <AuthLayout :eyebrow="step === 'account' ? '公开注册' : '邮箱验证'" :title="step === 'account' ? '创建知序账号' : '验证邮箱'" :description="step === 'account' ? '邮箱是唯一账号名称，注册后会创建个人工作区' : '输入邮件中的验证码完成注册'">
+    <v-form class="auth-form-stack" @submit.prevent="submit">
       <template v-if="step === 'account'">
-        <v-text-field v-model="form.email" type="email" label="邮箱" prepend-inner-icon="mdi-email-outline" required class="mb-4" />
-        <v-text-field v-model="form.password" type="password" label="密码" hint="至少 12 位" persistent-hint prepend-inner-icon="mdi-lock-outline" required class="mb-4" />
-        <v-text-field v-model="form.passwordConfirmation" type="password" label="确认密码" prepend-inner-icon="mdi-lock-check-outline" required class="mb-4" />
+        <v-text-field v-model="form.email" class="auth-field" type="email" label="邮箱" autocomplete="email" variant="outlined" density="compact" required />
+        <v-text-field v-model="form.password" class="auth-field" type="password" label="密码" autocomplete="new-password" hint="至少 12 位" persistent-hint variant="outlined" density="compact" required />
+        <v-text-field v-model="form.passwordConfirmation" class="auth-field" type="password" label="确认密码" autocomplete="new-password" variant="outlined" density="compact" required />
       </template>
-      <v-text-field v-else v-model="form.code" label="6 位验证码" maxlength="6" inputmode="numeric" prepend-inner-icon="mdi-shield-key-outline" required class="mb-4" />
-      <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert>
-      <v-btn type="submit" color="primary" size="large" block :loading="loading" :disabled="step === 'account' ? form.password.length < 12 || form.password !== form.passwordConfirmation : form.code.length !== 6">{{ step === 'account' ? '发送验证邮件' : '验证并进入' }}</v-btn>
-      <v-btn v-if="step === 'verify'" variant="text" block class="mt-2" @click="step = 'account'">修改邮箱</v-btn>
+      <template v-else>
+        <div class="auth-sent-tip"><span>验证码已发送至 {{ form.email }}</span><button type="button" @click="step = 'account'; form.code = ''">修改邮箱</button></div>
+        <v-text-field v-model="form.code" class="auth-field" label="6 位验证码" maxlength="6" inputmode="numeric" autocomplete="one-time-code" variant="outlined" density="compact" required />
+      </template>
+      <v-alert v-if="error" type="error" variant="tonal" density="compact" class="auth-alert">{{ error }}</v-alert>
+      <v-btn type="submit" class="auth-primary" size="large" block :loading="loading" :disabled="step === 'account' ? form.password.length < 12 || form.password !== form.passwordConfirmation : form.code.length !== 6">{{ step === 'account' ? '发送验证邮件' : '验证并进入' }}</v-btn>
     </v-form>
     <template #footer>已有账号？ <router-link to="/login">返回登录</router-link></template>
   </AuthLayout>

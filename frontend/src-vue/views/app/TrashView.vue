@@ -198,9 +198,8 @@ function relativeTime(value: string) {
   <div class="page-shell trash-page">
     <header class="page-heading">
       <div>
-        <div class="eyebrow">内容管理</div>
-        <h1>全局回收站</h1>
-        <p>集中查看你有权管理的已删除文稿；恢复会保留原知识库和路径。</p>
+        <h1>回收站</h1>
+        <p>删除的内容会保留在这里，恢复后仍位于原知识库。</p>
       </div>
     </header>
 
@@ -414,27 +413,27 @@ function relativeTime(value: string) {
 </template>
 
 <style scoped>
-.trash-page { max-width: 1120px; }
-.eyebrow, .danger-eyebrow { margin-bottom: 6px; color: rgb(var(--v-theme-primary)); font-size: .74rem; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
-.trash-toolbar { display: flex; align-items: center; gap: 18px; padding: 14px 16px; }
+.trash-page { max-width: 960px; padding-top:42px; }
+.trash-page :deep(.page-heading){margin-bottom:24px}.trash-page :deep(.page-heading h1){font-size:28px;font-weight:650;letter-spacing:-.3px}.trash-page :deep(.page-heading p){margin-top:5px;color:#8a8f8d;font-size:13px}.danger-eyebrow { margin-bottom: 5px; color: #d33b35; font-size: 11px; font-weight: 700; letter-spacing: .08em; }
+.trash-toolbar { display: flex; align-items: center; gap: 14px; border:0!important;border-bottom:1px solid #e7e9e8!important;border-radius:0!important;padding: 0 0 14px;box-shadow:none!important }
 .search-form { display: flex; min-width: 0; max-width: 680px; flex: 1; align-items: center; gap: 10px; }
-.result-count { color: rgb(var(--v-theme-on-surface-variant)); font-size: .84rem; white-space: nowrap; }
-.result-count strong { color: rgb(var(--v-theme-on-surface)); }
-.batch-card { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-color: rgba(var(--v-theme-primary), .18); background: rgba(var(--v-theme-primary), .035); }
+.search-form :deep(.v-field){border-radius:5px}.search-form :deep(.v-btn){height:38px;border-radius:5px;letter-spacing:0;text-transform:none}.result-count { color: #8a8f8d; font-size: 12px; white-space: nowrap; }
+.result-count strong { color: #585a59; }
+.batch-card { display: flex; align-items: center; gap: 10px; min-height:48px;border-color:#dbe7ff!important;border-radius:5px!important;padding: 8px 12px; background:#f5f8ff!important;box-shadow:none!important }
 .batch-copy { display: flex; flex-direction: column; }
 .batch-copy strong { font-size: .9rem; }
 .batch-copy span { color: rgb(var(--v-theme-on-surface-variant)); font-size: .76rem; }
-.trash-list-card { overflow: hidden; min-height: 280px; }
-.trash-list { padding: 8px; }
-.trash-item { position: relative; display: flex; align-items: center; gap: 13px; border-radius: 12px; padding: 14px 12px; transition: background-color .16s ease; }
-.trash-item:hover, .trash-item.selected { background: rgba(var(--v-theme-primary), .045); }
+.trash-list-card { overflow: hidden; min-height: 280px;border:0!important;border-radius:0!important;box-shadow:none!important }
+.trash-list { padding: 0; }
+.trash-item { position: relative; display: flex; min-height:72px;align-items: center; gap: 11px; border-radius: 4px; padding: 10px 8px; transition: background-color .12s ease; }
+.trash-item:hover, .trash-item.selected { background:#f6f7f7; }
 .trash-item + .trash-item::before { position: absolute; top: 0; right: 14px; left: 68px; height: 1px; background: rgba(var(--v-border-color), var(--v-border-opacity)); content: ''; }
-.resource-icon { flex: 0 0 auto; }
+.resource-icon { flex: 0 0 auto;border-radius:5px!important }
 .kb-icon { font-size: 1.2rem; line-height: 1; }
 .trash-main { min-width: 0; flex: 1; }
 .trash-title-row { display: flex; min-width: 0; align-items: center; gap: 8px; }
-.trash-title-row strong { overflow: hidden; font-size: .94rem; text-overflow: ellipsis; white-space: nowrap; }
-.trash-main p { overflow: hidden; margin: 3px 0 2px; color: rgb(var(--v-theme-on-surface-variant)); font-size: .82rem; text-overflow: ellipsis; white-space: nowrap; }
+.trash-title-row strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.trash-main p { overflow: hidden; margin: 3px 0 2px; color:#8a8f8d; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .trash-main small { color: rgb(var(--v-theme-on-surface-variant)); font-size: .74rem; opacity: .82; }
 .trash-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
 .load-more { display: flex; justify-content: center; padding: 18px 12px 14px; }

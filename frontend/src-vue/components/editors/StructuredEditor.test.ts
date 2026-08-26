@@ -16,6 +16,15 @@ beforeEach(() => {
       return bytes
     },
   })
+  vi.stubGlobal('visualViewport', {
+    width: 1024,
+    height: 768,
+    offsetLeft: 0,
+    offsetTop: 0,
+    scale: 1,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  })
 })
 
 afterEach(() => {
@@ -45,7 +54,6 @@ describe('StructuredEditor', () => {
   })
 
   it('initializes database fields and creates field and row IDs without randomUUID', async () => {
-    vi.stubGlobal('prompt', vi.fn(() => '负责人'))
     const wrapper = mountEditor('DATABASE', { type: 'database', content: [] })
 
     expect(wrapper.text()).toContain('名称')
@@ -57,6 +65,16 @@ describe('StructuredEditor', () => {
     expect(rowUpdate.rows[0]?.id).toMatch(UUID_V4)
 
     await wrapper.get('[data-testid="add-field"]').trigger('click')
+    await nextTick()
+    const fieldName = document.querySelector<HTMLInputElement>('[data-testid="field-name"] input')
+    expect(fieldName).toBeTruthy()
+    fieldName!.value = '负责人'
+    fieldName!.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    const confirm = document.querySelector<HTMLElement>('[data-testid="confirm-add-field"]')
+    expect(confirm).toBeTruthy()
+    confirm!.click()
+    await nextTick()
     const fieldUpdate = lastJson<{ fields: Array<{ id: string; name: string }> }>(wrapper)
     expect(fieldUpdate.fields.at(-1)).toMatchObject({ name: '负责人' })
     expect(fieldUpdate.fields.at(-1)?.id).toMatch(UUID_V4)

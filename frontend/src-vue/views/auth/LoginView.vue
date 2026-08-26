@@ -17,6 +17,13 @@ const loading = ref(false)
 const error = ref('')
 onMounted(async () => { registration.value = await get('/api/v1/auth/registration-status') })
 
+function switchMode(value: 'password' | 'code') {
+  mode.value = value
+  codeSent.value = false
+  form.code = ''
+  error.value = ''
+}
+
 async function finish() {
   resetCsrf()
   await session.loadUser()
@@ -35,22 +42,25 @@ async function login() {
 </script>
 
 <template>
-  <AuthLayout eyebrow="欢迎回来" title="登录工作区" description="使用邮箱继续你的工作。">
-    <v-btn-toggle v-if="registration?.emailCodeLoginAvailable" v-model="mode" mandatory color="primary" variant="outlined" divided class="mb-6 w-100">
-      <v-btn value="password" class="flex-grow-1">密码</v-btn><v-btn value="code" class="flex-grow-1">邮箱验证码</v-btn>
-    </v-btn-toggle>
-    <v-form @submit.prevent="login">
-      <v-text-field v-model="form.email" label="邮箱" type="email" autocomplete="email" prepend-inner-icon="mdi-email-outline" :disabled="codeSent" required class="mb-4" />
-      <v-text-field v-if="mode === 'password'" v-model="form.password" label="密码" type="password" autocomplete="current-password" prepend-inner-icon="mdi-lock-outline" required class="mb-2" />
-      <v-text-field v-else-if="codeSent" v-model="form.code" label="6 位验证码" maxlength="6" inputmode="numeric" prepend-inner-icon="mdi-shield-key-outline" required class="mb-4" />
-      <div v-if="mode === 'password'" class="text-right mb-4"><router-link to="/forgot-password">忘记密码？</router-link></div>
-      <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert>
-      <v-btn type="submit" color="primary" size="large" block :loading="loading">{{ mode === 'code' && !codeSent ? '发送验证码' : '登录' }}</v-btn>
-      <v-btn v-if="codeSent" variant="text" block class="mt-2" @click="codeSent = false">更换邮箱</v-btn>
+  <AuthLayout eyebrow="欢迎回来" title="登录知序" description="使用邮箱继续访问你的知识空间">
+    <div v-if="registration?.emailCodeLoginAvailable" class="auth-mode-tabs" role="tablist" aria-label="登录方式">
+      <button type="button" role="tab" :aria-selected="mode === 'password'" :class="{ 'is-active': mode === 'password' }" @click="switchMode('password')">密码登录</button>
+      <button type="button" role="tab" :aria-selected="mode === 'code'" :class="{ 'is-active': mode === 'code' }" @click="switchMode('code')">验证码登录</button>
+    </div>
+    <v-form class="auth-form-stack" @submit.prevent="login">
+      <v-text-field v-model="form.email" class="auth-field" label="邮箱" type="email" autocomplete="email" variant="outlined" density="compact" :disabled="codeSent" required />
+      <v-text-field v-if="mode === 'password'" v-model="form.password" class="auth-field" label="密码" type="password" autocomplete="current-password" variant="outlined" density="compact" required />
+      <template v-else-if="codeSent">
+        <div class="auth-sent-tip"><span>验证码已发送至 {{ form.email }}</span><button type="button" @click="codeSent = false; form.code = ''">更换邮箱</button></div>
+        <v-text-field v-model="form.code" class="auth-field" label="6 位验证码" maxlength="6" inputmode="numeric" autocomplete="one-time-code" variant="outlined" density="compact" required />
+      </template>
+      <div v-if="mode === 'password'" class="auth-form-meta"><span /><router-link to="/forgot-password">忘记密码？</router-link></div>
+      <v-alert v-if="error" type="error" variant="tonal" density="compact" class="auth-alert">{{ error }}</v-alert>
+      <v-btn type="submit" class="auth-primary" size="large" block :loading="loading">{{ mode === 'code' ? codeSent ? '验证并登录' : '获取验证码' : '登录' }}</v-btn>
     </v-form>
     <template #footer>
       <span v-if="registration?.publicRegistrationEnabled">没有账号？ <router-link to="/register">立即注册</router-link></span>
-      <span v-else>没有账号？请联系管理员获取邀请。</span>
+      <span v-else>没有账号？请联系管理员获取邀请</span>
     </template>
   </AuthLayout>
 </template>

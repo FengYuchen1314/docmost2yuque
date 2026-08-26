@@ -28,16 +28,16 @@ async function accept() {
 
 <template>
   <AuthLayout eyebrow="成员邀请" :title="invitation ? `加入「${invitation.workspaceName}」` : '验证邀请'" :description="invitation ? `邀请绑定 ${invitation.maskedEmail}，接受后将直接进入工作区。` : '正在确认邀请状态。'">
-    <v-progress-linear v-if="loading" indeterminate color="primary" />
-    <v-alert v-else-if="!invitation" type="error" variant="tonal">{{ error || '邀请无效、已过期或已使用。' }}</v-alert>
-    <v-form v-else @submit.prevent="accept">
-      <v-alert type="info" variant="tonal" class="mb-4">空间角色：{{ invitation.workspaceRole }} · 到期时间：{{ new Date(invitation.expiresAt).toLocaleString('zh-CN') }}</v-alert>
+    <div v-if="loading" class="auth-done"><v-progress-circular class="auth-progress" indeterminate color="#00b96b" size="36" width="3" /><span>正在加载邀请信息…</span></div>
+    <v-alert v-else-if="!invitation" type="error" variant="tonal" density="compact" class="auth-alert">{{ error || '邀请无效、已过期或已使用。' }}</v-alert>
+    <v-form v-else class="auth-form-stack" @submit.prevent="accept">
+      <div class="auth-invitation-summary">空间角色：{{ invitation.workspaceRole }}<br>邀请有效期至：{{ new Date(invitation.expiresAt).toLocaleString('zh-CN') }}</div>
       <template v-if="!invitation.accountExists">
-        <v-text-field v-model="form.password" type="password" label="为受邀邮箱设置密码" hint="至少 12 位" persistent-hint required class="mb-4" />
-        <v-text-field v-model="form.passwordConfirmation" type="password" label="确认密码" required class="mb-4" />
+        <v-text-field v-model="form.password" class="auth-field" type="password" label="为受邀邮箱设置密码" autocomplete="new-password" hint="至少 12 位" persistent-hint variant="outlined" density="compact" required />
+        <v-text-field v-model="form.passwordConfirmation" class="auth-field" type="password" label="确认密码" autocomplete="new-password" variant="outlined" density="compact" required />
       </template>
-      <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert>
-      <v-btn type="submit" color="primary" size="large" block :loading="accepting" :disabled="!invitation.accountExists && (form.password.length < 12 || form.password !== form.passwordConfirmation)">接受邀请并进入</v-btn>
+      <v-alert v-if="error" type="error" variant="tonal" density="compact" class="auth-alert">{{ error }}</v-alert>
+      <v-btn type="submit" class="auth-primary" size="large" block :loading="accepting" :disabled="!invitation.accountExists && (form.password.length < 12 || form.password !== form.passwordConfirmation)">接受邀请并进入</v-btn>
     </v-form>
   </AuthLayout>
 </template>

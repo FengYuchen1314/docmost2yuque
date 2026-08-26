@@ -49,6 +49,7 @@ const props = withDefaults(defineProps<{
   readonly?: boolean
   placeholder?: string
   showOutline?: boolean
+  title?: string
 }>(), {
   documentSettings: undefined,
   readonly: false,
@@ -58,6 +59,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
+  'update:title': [value: string]
   blur: []
   slash: [context: { blockIndex: number; query: string }]
   'selection-change': [start: number, end: number]
@@ -103,7 +105,7 @@ const headings = computed(() => blocks.value.flatMap((block, index) => {
   return [{ index, kind: block.kind, text: stripInlineMarkdown(block.content.trim()) }]
 }))
 const settings = computed(() => normalizeSettings(props.documentSettings))
-const outlineEnabled = computed(() => (props.showOutline ?? settings.value.showOutline) && headings.value.length > 0)
+const outlineEnabled = computed(() => props.showOutline ?? settings.value.showOutline)
 const editorClasses = computed(() => [
   `document-width-${settings.value.pageWidth.toLowerCase()}`,
   `document-font-${settings.value.fontFamily.toLowerCase()}`,
@@ -193,6 +195,19 @@ function redo() {
 
 function setKindFromValue(value: unknown) {
   if (isBlockKind(value)) setKind(value)
+}
+
+function onTitleInput(event: Event) {
+  const textarea = event.target as HTMLTextAreaElement
+  const value = textarea.value.replace(/[\r\n]+/g, ' ')
+  if (textarea.value !== value) textarea.value = value
+  emit('update:title', value)
+}
+
+function onTitleKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Enter') return
+  event.preventDefault()
+  scheduleFocus({ index: 0, position: 0 })
 }
 
 function setKind(kind: BlockKind, explicitIndices = targetIndices.value) {
@@ -967,49 +982,80 @@ function isBlockKind(value: unknown): value is BlockKind {
     :aria-readonly="readonly"
     @blur.capture="onRootBlur"
   >
-    <v-toolbar class="editor-toolbar px-2 px-sm-3" color="surface" density="compact" flat>
-      <v-select
-        class="kind-select"
-        :model-value="activeBlock.kind"
-        :items="kindItems"
-        :disabled="readonly"
-        aria-label="块类型"
-        density="compact"
-        hide-details
-        variant="solo-filled"
-        @update:model-value="setKindFromValue"
-      />
-
-      <v-divider class="mx-2" vertical />
-      <v-btn :disabled="readonly" icon="mdi-format-bold" size="small" title="粗体（Ctrl+B）" aria-label="粗体" @click="formatSelection('**')" />
-      <v-btn :disabled="readonly" icon="mdi-format-italic" size="small" title="斜体（Ctrl+I）" aria-label="斜体" @click="formatSelection('*')" />
-      <v-btn :disabled="readonly" icon="mdi-link-variant" size="small" title="链接（Ctrl+K）" aria-label="插入链接" @click="openLinkDialog()" />
-
-      <v-divider class="mx-2 d-none d-sm-flex" vertical />
-      <v-btn :disabled="readonly || !targetIndices.length" class="d-none d-sm-inline-flex" icon="mdi-format-indent-decrease" size="small" title="减少缩进（Shift+Tab）" aria-label="减少缩进" @click="indentSelected(-1)" />
-      <v-btn :disabled="readonly || !targetIndices.length" class="d-none d-sm-inline-flex" icon="mdi-format-indent-increase" size="small" title="增加缩进（Tab）" aria-label="增加缩进" @click="indentSelected(1)" />
-      <v-btn :disabled="readonly || targetIndices[0] === 0" class="d-none d-md-inline-flex" icon="mdi-arrow-up" size="small" title="上移所选块（Alt+↑）" aria-label="上移所选块" @click="moveSelected(-1)" />
-      <v-btn :disabled="readonly || targetIndices.at(-1) === blocks.length - 1" class="d-none d-md-inline-flex" icon="mdi-arrow-down" size="small" title="下移所选块（Alt+↓）" aria-label="下移所选块" @click="moveSelected(1)" />
-      <v-btn :disabled="readonly" class="d-none d-md-inline-flex" color="error" icon="mdi-trash-can-outline" size="small" title="删除所选块" aria-label="删除所选块" @click="removeSelected" />
-
-      <v-spacer />
-      <span v-if="selectedIndices.length > 1" class="selection-summary d-none d-lg-inline">已选择 {{ selectedIndices.length }} 个块</span>
-      <v-btn :disabled="readonly || !canUndo" icon="mdi-undo" size="small" title="撤销（Ctrl+Z）" aria-label="撤销" @click="undo" />
-      <v-btn :disabled="readonly || !canRedo" icon="mdi-redo" size="small" title="重做（Ctrl+Shift+Z）" aria-label="重做" @click="redo" />
-      <v-btn
-        v-if="outlineEnabled"
-        class="d-lg-none"
-        :icon="outlineOpen ? 'mdi-format-list-bulleted-square' : 'mdi-format-list-bulleted'"
-        size="small"
-        :title="outlineOpen ? '收起大纲' : '展开大纲'"
-        :aria-expanded="outlineOpen"
-        aria-label="文稿大纲"
-        @click="outlineOpen = !outlineOpen"
-      />
+    <v-toolbar class="editor-toolbar" color="surface" density="compact" height="42" flat>
+      <div class="editor-toolbar-inner">
+        <v-menu location="bottom start" :close-on-content-click="true">
+          <template #activator="{ props: insertMenuProps }"><v-btn v-bind="insertMenuProps" :disabled="readonly" color="success" icon="mdi-plus-circle" size="small" title="插入内容" aria-label="插入内容" /></template>
+          <v-list class="insert-menu" density="compact" min-width="238">
+            <v-list-subheader>插入内容</v-list-subheader>
+            <v-list-item v-for="command in commands" :key="command.kind" :prepend-icon="command.icon" :title="command.title" :subtitle="command.description" @click="addBlockAfter(activeIndex, command.kind)" />
+          </v-list>
+        </v-menu>
+        <v-divider class="toolbar-divider" vertical />
+        <v-btn :disabled="readonly || !canUndo" icon="mdi-undo" size="small" title="撤销（Ctrl+Z）" aria-label="撤销" @click="undo" />
+        <v-btn :disabled="readonly || !canRedo" icon="mdi-redo" size="small" title="重做（Ctrl+Shift+Z）" aria-label="重做" @click="redo" />
+        <v-divider class="toolbar-divider" vertical />
+        <v-select
+          class="kind-select"
+          :model-value="activeBlock.kind"
+          :items="kindItems"
+          :disabled="readonly"
+          aria-label="块类型"
+          density="compact"
+          hide-details
+          variant="plain"
+          @update:model-value="setKindFromValue"
+        />
+        <v-divider class="toolbar-divider" vertical />
+        <v-btn :disabled="readonly" icon="mdi-format-bold" size="small" title="粗体（Ctrl+B）" aria-label="粗体" @click="formatSelection('**')" />
+        <v-btn :disabled="readonly" icon="mdi-format-italic" size="small" title="斜体（Ctrl+I）" aria-label="斜体" @click="formatSelection('*')" />
+        <v-btn :disabled="readonly" class="d-none d-sm-inline-flex" icon="mdi-format-strikethrough-variant" size="small" title="删除线" aria-label="删除线" @click="formatSelection('~~')" />
+        <v-divider class="toolbar-divider d-none d-sm-flex" vertical />
+        <v-btn :disabled="readonly" class="d-none d-md-inline-flex" icon="mdi-format-list-bulleted" size="small" title="无序列表" aria-label="无序列表" @click="setKind('BULLET')" />
+        <v-btn :disabled="readonly" class="d-none d-md-inline-flex" icon="mdi-format-list-numbered" size="small" title="有序列表" aria-label="有序列表" @click="setKind('NUMBERED')" />
+        <v-btn :disabled="readonly" class="d-none d-md-inline-flex" icon="mdi-checkbox-marked-outline" size="small" title="待办" aria-label="待办" @click="setKind('TODO')" />
+        <v-btn :disabled="readonly" class="d-none d-md-inline-flex" icon="mdi-format-quote-close" size="small" title="引用" aria-label="引用" @click="setKind('QUOTE')" />
+        <v-btn :disabled="readonly" icon="mdi-link-variant" size="small" title="链接（Ctrl+K）" aria-label="插入链接" @click="openLinkDialog()" />
+        <v-menu location="bottom end">
+          <template #activator="{ props: menuProps }"><v-btn v-bind="menuProps" icon="mdi-dots-horizontal" size="small" title="更多格式" aria-label="更多格式" /></template>
+          <v-list density="compact" min-width="190">
+            <v-list-item prepend-icon="mdi-format-indent-decrease" title="减少缩进" :disabled="readonly || !targetIndices.length" @click="indentSelected(-1)" />
+            <v-list-item prepend-icon="mdi-format-indent-increase" title="增加缩进" :disabled="readonly || !targetIndices.length" @click="indentSelected(1)" />
+            <v-list-item prepend-icon="mdi-arrow-up" title="上移所选块" :disabled="readonly || targetIndices[0] === 0" @click="moveSelected(-1)" />
+            <v-list-item prepend-icon="mdi-arrow-down" title="下移所选块" :disabled="readonly || targetIndices.at(-1) === blocks.length - 1" @click="moveSelected(1)" />
+            <v-divider />
+            <v-list-item prepend-icon="mdi-trash-can-outline" title="删除所选块" base-color="error" :disabled="readonly" @click="removeSelected" />
+          </v-list>
+        </v-menu>
+        <v-spacer />
+        <span v-if="selectedIndices.length > 1" class="selection-summary d-none d-lg-inline">已选择 {{ selectedIndices.length }} 个块</span>
+        <v-btn
+          v-if="outlineEnabled"
+          class="d-lg-none"
+          :icon="outlineOpen ? 'mdi-format-list-bulleted-square' : 'mdi-format-list-bulleted'"
+          size="small"
+          :title="outlineOpen ? '收起大纲' : '展开大纲'"
+          :aria-expanded="outlineOpen"
+          aria-label="文稿大纲"
+          @click="outlineOpen = !outlineOpen"
+        />
+      </div>
     </v-toolbar>
 
     <div class="editor-shell" :class="{ 'with-outline': outlineEnabled && outlineOpen }">
       <main class="document-canvas" aria-label="块式文稿编辑器">
+        <textarea
+          v-if="props.title !== undefined"
+          class="document-title-input"
+          :value="props.title"
+          :readonly="readonly"
+          rows="1"
+          maxlength="500"
+          placeholder="无标题"
+          aria-label="文稿标题"
+          @input="onTitleInput"
+          @keydown="onTitleKeydown"
+        />
         <div
           v-for="(block, index) in blocks"
           :key="index"
@@ -1116,6 +1162,7 @@ function isBlockKind(value: unknown): value is BlockKind {
           <v-btn icon="mdi-chevron-right" size="x-small" title="收起大纲" aria-label="收起大纲" @click="outlineOpen = false" />
         </header>
         <nav>
+          <span v-if="!headings.length" class="outline-empty">暂无标题</span>
           <button
             v-for="heading in headings"
             :key="heading.index"
@@ -1167,79 +1214,143 @@ function isBlockKind(value: unknown): value is BlockKind {
 
 <style scoped>
 .document-editor {
-  --editor-font-size: 16px;
-  --editor-line-height: 1.72;
-  --editor-block-gap: 10px;
-  min-height: min(760px, calc(100vh - 64px));
-  background: rgb(var(--v-theme-surface));
-  color: rgb(var(--v-theme-on-surface));
+  --editor-font-size: 15px;
+  --editor-line-height: 1.74;
+  --editor-block-gap: 2px;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: #fff;
+  color: #262626;
 }
 
 .document-editor.document-size-small { --editor-font-size: 14px; }
-.document-editor.document-size-large { --editor-font-size: 18px; }
-.document-editor.document-spacing-compact { --editor-block-gap: 4px; --editor-line-height: 1.55; }
-.document-editor.document-spacing-relaxed { --editor-block-gap: 18px; --editor-line-height: 1.88; }
+.document-editor.document-size-large { --editor-font-size: 17px; }
+.document-editor.document-spacing-compact { --editor-block-gap: 0px; --editor-line-height: 1.62; }
+.document-editor.document-spacing-relaxed { --editor-block-gap: 12px; --editor-line-height: 1.9; }
 .document-editor.document-font-serif .block-input { font-family: ui-serif, Georgia, 'Noto Serif SC', serif; }
-.document-editor.document-font-sans .block-input { font-family: Inter, ui-sans-serif, system-ui, 'Microsoft YaHei', sans-serif; }
+.document-editor.document-font-sans .block-input { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; }
 
 .editor-toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
-  backdrop-filter: blur(14px);
+  z-index: 24;
+  min-height: 42px !important;
+  flex: 0 0 42px;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fff !important;
+  box-shadow: none !important;
 }
 
-.kind-select { flex: 0 0 142px; max-width: 142px; }
-.selection-summary { margin-right: 8px; color: rgb(var(--v-theme-on-surface-variant)); font-size: 12px; }
+.editor-toolbar-inner {
+  display: flex;
+  width: min(1240px, calc(100% - 24px));
+  height: 42px;
+  min-width: 0;
+  align-items: center;
+  margin: 0 auto;
+  overflow: hidden;
+}
+.editor-toolbar :deep(.v-btn) {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  color: #585a59;
+}
+.editor-toolbar :deep(.v-btn--disabled) { opacity: .28; }
+.editor-toolbar :deep(.v-btn__overlay) { background: #e7e9e8; }
+.editor-toolbar :deep(.v-btn.text-success),
+.editor-toolbar :deep(.text-success) { color: #00b96b !important; }
+.toolbar-divider { height: 18px; margin: 0 7px; color: #e7e9e8; }
+.kind-select { flex: 0 0 94px; max-width: 94px; }
+.kind-select :deep(.v-field__input) { min-height: 30px; padding: 0 2px; font-size: 14px; }
+.kind-select :deep(.v-field__append-inner) { padding-top: 3px; }
+.kind-select :deep(.v-list-item__prepend) { display: none; }
+.selection-summary { margin-right: 8px; color: #8a8f8d; font-size: 12px; }
 
 .editor-shell {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 32px;
-  width: min(100%, 1040px);
-  margin: 0 auto;
-  padding: 42px 28px 120px;
+  position: relative;
+  display: block;
+  width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 52px 0 120px;
+  scrollbar-gutter: stable;
 }
 
-.document-width-wide .editor-shell { width: min(100%, 1320px); }
-.editor-shell.with-outline { grid-template-columns: minmax(0, 1fr) 210px; }
+.document-width-wide .editor-shell { width: 100%; }
+.editor-shell.with-outline { display: block; }
 
-.document-canvas { min-width: 0; }
+.document-canvas {
+  width: 750px;
+  max-width: calc(100% - 48px);
+  min-width: 0;
+  margin: 0 auto;
+}
+.document-width-wide .document-canvas { width: 900px; }
+.document-title-input {
+  display: block;
+  width: 100%;
+  min-height: 50px;
+  margin: 0 0 4px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: #262626;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 36px;
+  font-weight: 650;
+  line-height: 50px;
+  letter-spacing: -.5px;
+  field-sizing: content;
+}
+.document-title-input::placeholder { color: #c5c7c6; }
 .document-block {
   --block-indent: 0px;
   position: relative;
   display: grid;
-  grid-template-columns: 54px 28px minmax(0, 1fr);
+  grid-template-columns: 28px minmax(0, 1fr);
   align-items: flex-start;
-  min-height: 42px;
-  margin: var(--editor-block-gap) 0 var(--editor-block-gap) var(--block-indent);
-  border-radius: 10px;
+  min-height: 34px;
+  margin: var(--editor-block-gap) 0 var(--editor-block-gap) min(var(--block-indent), 120px);
+  border-radius: 2px;
   transition: background-color 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
 }
 
 .document-block:hover,
-.document-block.active { background: rgba(var(--v-theme-primary), .035); }
-.document-block.selected { box-shadow: inset 3px 0 rgba(var(--v-theme-primary), .78); background: rgba(var(--v-theme-primary), .065); }
+.document-block.active { background: transparent; }
+.document-block.selected { box-shadow: inset 2px 0 #2f6feb; background: #f7f9ff; }
 .document-block.dragging { opacity: .4; }
 .document-block.drop-before::before,
 .document-block.drop-after::after {
   position: absolute;
-  right: 8px;
-  left: 8px;
+  right: 0;
+  left: 0;
   z-index: 3;
-  height: 3px;
+  height: 2px;
   border-radius: 999px;
-  background: rgb(var(--v-theme-primary));
+  background: #2f6feb;
   content: '';
 }
 .document-block.drop-before::before { top: -6px; }
 .document-block.drop-after::after { bottom: -6px; }
 
 .block-rail {
+  position: absolute;
+  top: 2px;
+  right: calc(100% + 3px);
   display: flex;
+  width: 54px;
+  height: 28px;
   align-items: center;
-  padding-top: 5px;
+  justify-content: flex-end;
+  padding: 0;
   opacity: 0;
   transition: opacity 100ms ease;
 }
@@ -1259,48 +1370,56 @@ function isBlockKind(value: unknown): value is BlockKind {
 .block-handle,
 .block-add {
   display: inline-grid;
-  width: 25px;
-  height: 28px;
+  width: 24px;
+  height: 26px;
   place-items: center;
-  border-radius: 7px;
+  border-radius: 4px;
   background: transparent;
-  color: rgb(var(--v-theme-on-surface-variant));
+  color: #8a8f8d;
 }
 .block-handle:hover,
-.block-add:hover { background: rgba(var(--v-theme-on-surface), .075); }
+.block-add:hover { background: #f0f1f0; color: #262626; }
 .block-handle:disabled,
 .block-add:disabled { cursor: default; opacity: .35; }
 
 .block-glyph {
-  min-height: 38px;
-  padding-top: 8px;
-  color: rgb(var(--v-theme-on-surface-variant));
-  font: 600 11px/1.2 ui-sans-serif, system-ui, sans-serif;
+  min-height: 34px;
+  padding-top: 6px;
+  color: #585a59;
+  font: 600 12px/1.4 ui-sans-serif, system-ui, sans-serif;
   text-align: center;
   user-select: none;
 }
-.kind-quote .block-glyph { color: rgb(var(--v-theme-primary)); font-size: 18px; padding-top: 4px; }
-.kind-bullet .block-glyph { font-size: 20px; padding-top: 2px; }
-.kind-numbered .block-glyph { font-size: 13px; padding-top: 8px; }
+.kind-paragraph .block-glyph,
+.kind-h1 .block-glyph,
+.kind-h2 .block-glyph,
+.kind-code .block-glyph { display: none; }
+.kind-paragraph .block-input,
+.kind-h1 .block-input,
+.kind-h2 .block-input,
+.kind-code .block-input { grid-column: 1 / -1; }
+.kind-quote .block-glyph { color: #8a8f8d; font-size: 17px; padding-top: 3px; }
+.kind-bullet .block-glyph { font-size: 19px; padding-top: 1px; }
+.kind-numbered .block-glyph { font-size: 13px; padding-top: 6px; }
 
 .todo-check {
   display: grid;
   width: 18px;
   height: 18px;
-  margin: 9px 5px 0;
+  margin: 5px 5px 0;
   place-items: center;
-  border: 1.5px solid rgba(var(--v-theme-on-surface), .35);
-  border-radius: 5px;
+  border: 1.5px solid #b5b8b7;
+  border-radius: 4px;
   background: transparent;
   color: white;
 }
-.todo-check.checked { border-color: rgb(var(--v-theme-primary)); background: rgb(var(--v-theme-primary)); }
+.todo-check.checked { border-color: #2f6feb; background: #2f6feb; }
 
 .block-input {
   display: block;
   width: 100%;
-  min-height: 38px;
-  padding: 5px 8px 4px;
+  min-height: 34px;
+  padding: 3px 0 4px;
   overflow: hidden;
   border: 0;
   outline: 0;
@@ -1309,20 +1428,20 @@ function isBlockKind(value: unknown): value is BlockKind {
   color: inherit;
   font-size: var(--editor-font-size);
   line-height: var(--editor-line-height);
-  caret-color: rgb(var(--v-theme-primary));
+  caret-color: #2f6feb;
 }
-.block-input::placeholder { color: rgba(var(--v-theme-on-surface), .36); }
-.kind-h1 .block-input { padding-top: 0; font-size: calc(var(--editor-font-size) * 1.75); font-weight: 750; line-height: 1.3; }
-.kind-h2 .block-input { padding-top: 2px; font-size: calc(var(--editor-font-size) * 1.38); font-weight: 700; line-height: 1.4; }
-.kind-quote .block-input { border-left: 3px solid rgba(var(--v-theme-primary), .55); color: rgb(var(--v-theme-on-surface-variant)); font-style: italic; }
-.block-input.completed { color: rgba(var(--v-theme-on-surface), .48); text-decoration: line-through; }
+.block-input::placeholder { color: #b7bbba; }
+.kind-h1 .block-input { padding-top: 1px; font-size: calc(var(--editor-font-size) * 1.66); font-weight: 700; line-height: 1.42; }
+.kind-h2 .block-input { padding-top: 2px; font-size: calc(var(--editor-font-size) * 1.35); font-weight: 700; line-height: 1.48; }
+.kind-quote .block-input { padding-left: 12px; border-left: 3px solid #d8dad9; color: #585a59; }
+.block-input.completed { color: #a6aaa8; text-decoration: line-through; }
 .block-input.code-input {
   min-height: 90px;
   padding: 14px 16px;
   overflow: auto;
-  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
-  border-radius: 10px;
-  background: rgba(var(--v-theme-on-surface), .045);
+  border: 1px solid #e7e9e8;
+  border-radius: 4px;
+  background: #f6f7f7;
   font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   tab-size: 2;
   white-space: pre;
@@ -1331,12 +1450,13 @@ function isBlockKind(value: unknown): value is BlockKind {
 .slash-menu {
   position: absolute;
   top: calc(100% + 4px);
-  left: 82px;
+  left: 0;
   z-index: 40;
   width: min(360px, calc(100vw - 64px));
   max-height: 410px;
   overflow: auto;
-  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border: 1px solid #e7e9e8;
+  border-radius: 8px;
 }
 .slash-heading {
   display: flex;
@@ -1355,33 +1475,37 @@ function isBlockKind(value: unknown): value is BlockKind {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 22px 0 0 82px;
-  padding: 7px 10px;
-  border-radius: 8px;
+  margin: 20px 0 0;
+  padding: 7px 0;
+  border-radius: 4px;
   background: transparent;
-  color: rgb(var(--v-theme-on-surface-variant));
+  color: #b7bbba;
   font-size: 13px;
-  opacity: .5;
+  opacity: .42;
 }
-.append-block:hover { background: rgba(var(--v-theme-primary), .06); color: rgb(var(--v-theme-primary)); opacity: 1; }
+.append-block:hover { color: #2f6feb; opacity: 1; }
 
 .document-outline {
-  position: sticky;
-  top: 76px;
-  align-self: start;
-  max-height: calc(100vh - 110px);
+  position: fixed;
+  top: 94px;
+  right: 0;
+  bottom: 0;
+  z-index: 18;
+  width: 196px;
   overflow: auto;
-  border-left: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
-  padding-left: 18px;
+  border-left: 1px solid #f0f0f0;
+  background: rgba(255,255,255,.98);
+  padding: 15px 12px 32px;
 }
-.document-outline header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; color: rgb(var(--v-theme-on-surface-variant)); font-size: 12px; font-weight: 700; }
+.document-outline header { display: flex; align-items: center; justify-content: space-between; height: 28px; margin-bottom: 7px; color: #585a59; font-size: 13px; font-weight: 600; }
 .document-outline nav { display: flex; flex-direction: column; gap: 2px; }
+.outline-empty { padding: 7px 8px; color: #b7bbba; font-size: 12px; }
 .document-outline nav button {
   overflow: hidden;
-  padding: 6px 8px;
-  border-radius: 6px;
+  padding: 6px 7px;
+  border-radius: 4px;
   background: transparent;
-  color: rgb(var(--v-theme-on-surface-variant));
+  color: #585a59;
   font-size: 13px;
   text-align: left;
   text-overflow: ellipsis;
@@ -1389,37 +1513,42 @@ function isBlockKind(value: unknown): value is BlockKind {
 }
 .document-outline nav button.level-two { padding-left: 22px; font-size: 12px; }
 .document-outline nav button:hover,
-.document-outline nav button.active { background: rgba(var(--v-theme-primary), .07); color: rgb(var(--v-theme-primary)); }
+.document-outline nav button.active { background: #f0f1f0; color: #262626; }
 .outline-restore {
   position: fixed;
-  right: 22px;
-  bottom: 24px;
-  width: 38px;
-  height: 38px;
+  top: 108px;
+  right: 14px;
+  z-index: 19;
+  width: 34px;
+  height: 34px;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
-  border-radius: 11px;
-  background: rgb(var(--v-theme-surface));
-  color: rgb(var(--v-theme-on-surface-variant));
-  box-shadow: 0 8px 28px rgba(15, 23, 42, .12);
+  border: 0;
+  border-radius: 4px;
+  background: #fff;
+  color: #8a8f8d;
+  box-shadow: none;
 }
+.outline-restore:hover { background: #f0f1f0; color: #262626; }
 
 .link-hint { margin: 0 0 12px; color: rgb(var(--v-theme-on-surface-variant)); font-size: 12px; }
 
 @media (max-width: 1024px) {
-  .editor-shell,
-  .editor-shell.with-outline { grid-template-columns: minmax(0, 1fr); }
-  .document-outline { position: static; grid-row: 1; max-height: 220px; border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity)); border-radius: 12px; padding: 12px; }
+  .document-outline { width: 184px; box-shadow: -8px 0 30px rgba(0,0,0,.05); }
 }
 
 @media (max-width: 600px) {
-  .editor-shell { padding: 28px 8px 90px; }
-  .document-block { grid-template-columns: 40px 24px minmax(0, 1fr); margin-left: min(var(--block-indent), 48px); }
+  .editor-toolbar-inner { width: calc(100% - 8px); }
+  .toolbar-divider { margin: 0 3px; }
+  .kind-select { flex-basis: 82px; max-width: 82px; }
+  .editor-shell { padding: 30px 0 90px; }
+  .document-canvas { max-width: calc(100% - 34px); }
+  .document-title-input { min-height: 44px; font-size: 30px; line-height: 42px; }
+  .document-block { grid-template-columns: 24px minmax(0, 1fr); margin-left: min(var(--block-indent), 44px); }
   .block-rail { opacity: .62; }
   .block-add { display: none; }
-  .append-block { margin-left: 64px; }
-  .slash-menu { left: 56px; }
+  .document-outline { top: 94px; width: min(82vw, 300px); box-shadow: -10px 0 36px rgba(0,0,0,.12); }
+  .outline-restore { right: 8px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
