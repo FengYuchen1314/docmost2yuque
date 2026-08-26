@@ -8,6 +8,7 @@ import { isNetworkFailure, queuePageUpdate } from '../../../src/lib/offline'
 import { vuetify } from '../../plugins/vuetify'
 import { ApiError, post } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
+import { useUiStore } from '../../stores/ui'
 import PageEditorView from './PageEditorView.vue'
 
 vi.mock('../../services/api', () => ({
@@ -382,6 +383,8 @@ describe('PageEditorView Yuque editor shell', () => {
     await mountPageEditor('page-a')
 
     expect(wrapper!.get('[aria-label="切换知识库"]')).toBeTruthy()
+    await wrapper!.get('[aria-label="新建文档"]').trigger('click')
+    expect(useUiStore().createRequest).toEqual({kind:'DOCUMENT',workspaceId:'workspace',knowledgeBaseId:'kb',source:'KNOWLEDGE_BASE'})
     await wrapper!.get('[aria-label="收起侧栏"]').trigger('click')
     expect(wrapper!.find('aside[aria-label="知识库目录"]').exists()).toBe(false)
     expect(wrapper!.get('[aria-label="展开目录"]')).toBeTruthy()

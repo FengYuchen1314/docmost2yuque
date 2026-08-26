@@ -1289,7 +1289,7 @@ function isBlockKind(value: unknown): value is BlockKind {
     :aria-readonly="readonly"
     @blur.capture="onRootBlur"
   >
-    <v-toolbar class="editor-toolbar" color="surface" density="compact" height="42" flat :inert="compactOutline && outlineOpen ? true : undefined">
+    <v-toolbar class="editor-toolbar" color="surface" height="42" flat :inert="compactOutline && outlineOpen ? true : undefined">
       <div class="editor-toolbar-inner">
         <v-menu
           v-model="insertMenuOpen"
@@ -1654,6 +1654,7 @@ function isBlockKind(value: unknown): value is BlockKind {
   height: 42px;
   min-width: 0;
   align-items: center;
+  gap: 8px;
   margin: 0;
   padding-left: 8px;
   overflow: hidden;
@@ -1672,8 +1673,10 @@ function isBlockKind(value: unknown): value is BlockKind {
 .editor-toolbar :deep(.v-btn.toolbar-active .v-btn__overlay) { opacity: 0; }
 .editor-toolbar :deep(.v-btn.text-success),
 .editor-toolbar :deep(.text-success) { color: #00b96b !important; }
-.toolbar-divider { height: 18px; margin: 0 7px; color: #e7e9e8; }
-.kind-select { flex: 0 0 94px; max-width: 94px; }
+.toolbar-divider { width: 1px; min-width: 1px; height: 18px; margin: 0; color: #e7e9e8; }
+.kind-select { height: 32px; min-height: 32px; flex: 0 0 94px; max-width: 94px; }
+.kind-select :deep(.v-input__control),
+.kind-select :deep(.v-field) { height: 32px; min-height: 32px; }
 .kind-select :deep(.v-field__input) { min-height: 30px; padding: 0 2px; font-size: 14px; }
 .kind-select :deep(.v-field__append-inner) { padding-top: 3px; }
 .kind-select :deep(.v-list-item__prepend) { display: none; }
@@ -2149,10 +2152,10 @@ function isBlockKind(value: unknown): value is BlockKind {
 .link-dialog-actions :deep(.v-btn--disabled) { opacity: .42; }
 
 @media (min-width: 1101px) {
-  .editor-toolbar-inner { box-sizing: border-box; padding-left: 82px; }
+  .editor-toolbar-inner { box-sizing: border-box; padding-left: var(--editor-toolbar-left, 86px); }
   .editor-toolbar :deep(.v-btn) { width: 26px; min-width: 26px; height: 26px; }
   .kind-select { flex-basis: 71px; max-width: 71px; }
-  .editor-shell.with-outline .document-canvas { margin-left: 155px; }
+  .editor-shell.with-outline .document-canvas { margin-left: var(--editor-outline-canvas-left, 155px); }
   .document-outline { right: 15px; width: 305px; padding: 35px 28px 32px; }
 }
 

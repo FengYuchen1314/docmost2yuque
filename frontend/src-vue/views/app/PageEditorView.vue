@@ -438,6 +438,11 @@ function hideCatalog(restore=true){
   if(restore)restoreFocus(target,'[aria-label="展开目录"]')
 }
 function closeCatalog(){hideCatalog(true)}
+function createCatalogDocument(){
+  const current=page.value
+  if(!current)return
+  ui.openCreate({kind:'DOCUMENT',workspaceId:current.workspaceId,knowledgeBaseId:current.knowledgeBaseId,source:'KNOWLEDGE_BASE'})
+}
 function handleOutlineOpenChange(open:boolean){outlinePanelOpen.value=open;if(open&&compactViewport.value){hideCatalog(false);if(sidePanel.value)hideSidePanel(false)}}
 function closeCompactOverlay(){if(catalogOpen.value)closeCatalog();else if(sidePanel.value)closeSidePanel();else documentEditor.value?.closeOutline()}
 function editorShortcut(event:KeyboardEvent){
@@ -569,7 +574,7 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
 </script>
 
 <template>
-  <div class="editor-page" :class="{ 'catalog-is-open': catalogOpen, 'side-panel-comments': sidePanel==='comments', 'side-panel-references': sidePanel==='references', 'compact-viewport': compactViewport }">
+  <div class="editor-page">
     <button v-if="compactViewport&&(catalogOpen||sidePanel||outlinePanelOpen)" type="button" class="editor-overlay-scrim" :class="catalogOpen?'catalog-overlay':sidePanel?'side-overlay':'outline-overlay'" aria-label="关闭浮层" @click="closeCompactOverlay" />
     <aside v-if="catalogOpen" class="editor-catalog" aria-label="知识库目录" :role="compactViewport?'dialog':undefined" :aria-modal="compactViewport?'true':undefined">
       <button type="button" class="catalog-context-row" @click="router.push('/app')">
@@ -597,7 +602,10 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
         </v-menu>
         <v-btn icon="mdi-dots-horizontal" variant="text" size="x-small" title="收起侧栏" aria-label="收起侧栏" @click="closeCatalog" />
       </div>
-      <label class="catalog-search"><v-icon icon="mdi-magnify" size="17"/><input ref="catalogSearchInput" v-model="catalogQuery" placeholder="搜索" aria-label="搜索目录"/><kbd>Ctrl J</kbd></label>
+      <div class="catalog-search-row">
+        <label class="catalog-search"><v-icon icon="mdi-magnify" size="17"/><input ref="catalogSearchInput" v-model="catalogQuery" placeholder="搜索" aria-label="搜索目录"/><kbd>Ctrl J</kbd></label>
+        <v-btn class="catalog-create" icon="mdi-plus" variant="text" size="small" title="新建文档" aria-label="新建文档" @click="createCatalogDocument" />
+      </div>
       <nav class="catalog-primary" aria-label="知识库导航">
         <button type="button" @click="router.push(`/app/kb/${page?.knowledgeBaseId}`)"><v-icon icon="mdi-home-outline" size="18"/><span>首页</span></button>
         <button type="button" class="active"><v-icon icon="mdi-format-list-bulleted" size="18"/><span>目录</span><span class="catalog-count">{{catalogEntries.length}}</span></button>
@@ -709,6 +717,8 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
 <style scoped>
 .editor-page {
   --catalog-width: 0px;
+  --editor-toolbar-left: 86px;
+  --editor-outline-canvas-left: 155px;
   position: relative;
   display: grid;
   width: 100%;
@@ -721,8 +731,12 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
   color: #262626;
   background: #fff;
 }
-.editor-page.catalog-is-open { --catalog-width: 259px; }
-.editor-page:not(.catalog-is-open) .editor-header { padding-left: 28px; }
+.editor-page:has(> .editor-catalog) {
+  --catalog-width: 259px;
+  --editor-toolbar-left: 8px;
+  --editor-outline-canvas-left: 70px;
+}
+.editor-page:not(:has(> .editor-catalog)) .editor-header { padding-left: 28px; }
 .editor-overlay-scrim { position: fixed; inset: 0; border: 0; background: rgba(31,35,33,.18); cursor: default; }
 .editor-overlay-scrim.catalog-overlay { z-index: 44; }
 .editor-overlay-scrim.side-overlay { z-index: 38; }
@@ -738,7 +752,6 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
   grid-row: 1;
   align-items: center;
   justify-content: space-between;
-  margin-right: 15px;
   padding: 0 17px 0 15px;
   border-bottom: 1px solid #f0f0f0;
   background: #fff;
@@ -789,7 +802,7 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
 .editor-side-panel {
   position: fixed;
   top: 52px;
-  right: 46px;
+  right: 15px;
   z-index: 39;
   display: flex;
   height: calc(100dvh - 52px);
@@ -836,8 +849,8 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
 .comment-composer button:disabled { cursor: default; opacity: .48; }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; border: 0; clip: rect(0,0,0,0); clip-path: inset(50%); white-space: nowrap; }
 .editor-side-panel :deep(.reference-panel) { min-height: 0; flex: 1 1 auto; overflow-y: auto; }
-.side-panel-comments .editor-content { width: calc(100% - 320px); }
-.side-panel-references .editor-content { width: calc(100% - 435px); }
+.editor-page:has(> .editor-side-panel--comments) .editor-content { width: calc(100% - 320px); }
+.editor-page:has(> .editor-side-panel--references) .editor-content { width: calc(100% - 435px); }
 
 @media (hover: hover) and (pointer: fine) {
   .comment-compose-trigger { opacity: 0; transform: translateY(4px); }
@@ -888,10 +901,13 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
 .knowledge-base-icon { display: grid; width: 26px; height: 26px; place-items: center; color: #6f91c7; font-size: 18px; }
 .knowledge-base-list button.active .knowledge-base-icon { color: #c59636; }
 .knowledge-base-list > p { margin: 0; padding: 48px 12px; color: #a6aaa8; font-size: 12px; text-align: center; }
-.catalog-search { display: flex; height: 36px; flex: 0 0 36px; align-items: center; gap: 7px; margin: 10px 8px 7px; padding: 0 9px; border: 1px solid transparent; border-radius: 6px; color: #8a8f8d; background: #f4f5f5; }
+.catalog-search-row { display: flex; height: 36px; flex: 0 0 36px; align-items: center; gap: 12px; margin: 10px 8px 7px; }
+.catalog-search { display: flex; height: 34px; min-width: 0; flex: 1 1 auto; align-items: center; gap: 7px; padding: 0 9px; border: 1px solid transparent; border-radius: 6px; color: #8a8f8d; background: #f4f5f5; }
 .catalog-search:focus-within { border-color: #9bbbf0; background: #fff; box-shadow: 0 0 0 2px rgba(47,111,235,.07); }
 .catalog-search input { min-width: 0; flex: 1; border: 0; outline: 0; color: #262626; background: transparent; font-size: 13px; }
 .catalog-search kbd { color: #b0b4b2; font: 11px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; white-space: nowrap; }
+.catalog-create { width: 32px !important; min-width: 32px !important; height: 32px !important; flex: 0 0 32px; border: 1px solid #e3e5e4; border-radius: 6px !important; color: #8a8f8d !important; background: #fff; }
+.catalog-create:hover { color: #262626 !important; background: #f4f5f5; }
 .catalog-primary { display: flex; flex: 0 0 auto; flex-direction: column; padding: 0 8px 5px; }
 .catalog-primary button { display: flex; width: 100%; height: 36px; align-items: center; gap: 10px; padding: 0 10px; border-radius: 5px; color: #4f5452; font-size: 14px; text-align: left; }
 .catalog-primary button:hover,
@@ -910,26 +926,16 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
 .catalog-edge-trigger { position: fixed; top: 198px; left: 0; z-index: 46; display: grid; width: 14px; height: 44px; place-items: center; border: 1px solid #e1e3e2; border-left: 0; border-radius: 0 6px 6px 0; color: #8a8f8d; background: #fff; box-shadow: 0 2px 7px rgba(0,0,0,.06); cursor: pointer; }
 .catalog-edge-trigger:hover { color: #262626; background: #f0f1f0; }
 .editor-word-count { position: fixed; bottom: 5px; left: 7px; z-index: 20; color: #a6aaa8; font-size: 12px; pointer-events: none; }
-.catalog-is-open .editor-word-count { display: none; }
+.editor-page:has(> .editor-catalog) .editor-word-count { display: none; }
 
 @media (min-width: 1101px) {
-  .editor-page,
-  .editor-page.catalog-is-open { grid-template-columns: minmax(0,1fr) 31px; }
-  .editor-header,
-  .editor-content { grid-column: 1; }
-  .editor-chrome-rail { grid-column: 2; }
-  .editor-catalog {
-    position: fixed;
-    inset: 0 auto 0 0;
-    width: 259px;
-    height: auto;
-    align-self: auto;
-  }
+  .editor-page { grid-template-columns: var(--catalog-width) minmax(0,1fr); }
+  .editor-chrome-rail { display: none; }
 }
 
 @media (max-width: 1100px) {
   .editor-page,
-  .editor-page.catalog-is-open { --catalog-width: 0px; grid-template-columns: 0 minmax(0,1fr); }
+  .editor-page:has(> .editor-catalog) { --catalog-width: 0px; --editor-toolbar-left: 8px; --editor-outline-canvas-left: 70px; grid-template-columns: 0 minmax(0,1fr); }
   .editor-header { margin-right: 0; }
   .editor-chrome-rail { display: none; }
   .editor-side-panel { right: 0; }
@@ -941,8 +947,8 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
   .editor-progress { right: 0; }
   .editor-error { right: 24px; left: 24px; }
   .catalog-bottom-count { left: min(82vw,300px); }
-  .side-panel-comments .editor-content,
-  .side-panel-references .editor-content { width: 100%; }
+  .editor-page:has(> .editor-side-panel--comments) .editor-content,
+  .editor-page:has(> .editor-side-panel--references) .editor-content { width: 100%; }
 }
 @media (max-width: 600px) {
   .editor-header { padding: 0 5px; }
