@@ -18,7 +18,9 @@ const routes: RouteRecordRaw[] = [
     path: '/app', component: () => import('../layouts/AppLayout.vue'),
     children: [
       { path: '', component: () => import('../views/app/DashboardView.vue'), meta: { title: '工作台', shell: 'default', navigationKey: 'workbench' } },
+      { path: 'ai', component: () => import('../views/app/AiWritingView.vue'), meta: { title: 'AI 写作' } },
       { path: 'notes', component: () => import('../views/app/QuickNotesView.vue'), meta: { title: '小记' } },
+      { path: 'explore', component: () => import('../views/app/AppExploreView.vue'), meta: { title: '逛逛' } },
       { path: 'capture', component: () => import('../views/app/CaptureView.vue'), meta: { title: '收集内容' } },
       { path: 'notifications', component: () => import('../views/app/NotificationsView.vue'), meta: { title: '消息中心' } },
       { path: 'trash', component: () => import('../views/app/TrashView.vue'), meta: { title: '回收站' } },

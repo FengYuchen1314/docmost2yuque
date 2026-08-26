@@ -1,27 +1,42 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import type { Notification, QuickNote, WorkbenchItem, WorkbenchPage } from '../../../src/types'
+import type { Page, WorkbenchItem, WorkbenchPage } from '../../../src/types'
 import { messageOf, post } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
 import { useUiStore } from '../../stores/ui'
-import { publicationStatusLabel } from '../../utils/displayLabels'
-import { createUuid } from '../../utils/uuid'
-import {
-  WORKBENCH_REASONS,
-  contentTypePresentation,
-  deduplicateWorkbenchItems,
-  normalizeWorkbenchReason,
-  quickNoteDocument,
-  relativeTime,
-} from '../../utils/workbench'
+import type { ResourceKind } from '../../utils/createResource'
+import { contentTypePresentation, deduplicateWorkbenchItems } from '../../utils/workbench'
+
+type DashboardReason = Extract<WorkbenchItem['reason'], 'EDITED' | 'VIEWED' | 'FAVORITE' | 'COLLABORATED'>
+type ContentFilter = 'ALL' | Page['contentType']
+
+const DASHBOARD_REASONS: Array<{ title: string; value: DashboardReason }> = [
+  { title: '编辑过', value: 'EDITED' },
+  { title: '浏览过', value: 'VIEWED' },
+  { title: '我点赞的', value: 'FAVORITE' },
+  { title: '我评论过', value: 'COLLABORATED' },
+]
+const CONTENT_FILTERS: Array<{ title: string; value: ContentFilter }> = [
+  { title: '所有', value: 'ALL' },
+  { title: '文档', value: 'DOCUMENT' },
+  { title: '表格', value: 'SPREADSHEET' },
+  { title: '画板', value: 'WHITEBOARD' },
+  { title: '数据表', value: 'DATABASE' },
+]
+const DOCUMENT_KINDS: Array<{ title: string; icon: string; kind?: ResourceKind; to?: string }> = [
+  { title: '新建文档', icon: 'mdi-file-document-outline', kind: 'DOCUMENT' },
+  { title: '新建表格', icon: 'mdi-table-large', kind: 'SPREADSHEET' },
+  { title: '新建画板', icon: 'mdi-drawing-box', kind: 'WHITEBOARD' },
+  { title: '新建数据表', icon: 'mdi-database-outline', kind: 'DATABASE' },
+  { title: '导入...', icon: 'mdi-import', to: '/app/transfers' },
+]
 
 const session = useSessionStore()
 const ui = useUiStore()
 const route = useRoute()
 const router = useRouter()
-
-const reason = ref<WorkbenchItem['reason']>(normalizeWorkbenchReason(route.query.filter))
+const reason = ref<DashboardReason>(dashboardReason(route.query.filter))
 const items = ref<WorkbenchItem[]>([])
 const nextOffset = ref(0)
 const hasMore = ref(false)
@@ -30,52 +45,95 @@ const loadingMore = ref(false)
 const workbenchError = ref('')
 const favoriteError = ref('')
 const favoritePending = ref<Set<string>>(new Set())
-const notifications = ref<Notification[]>([])
-const notificationsLoading = ref(false)
-const notificationsError = ref('')
-const capture = ref('')
-const captureExpanded = ref(false)
-const captureEditor = ref<HTMLTextAreaElement | null>(null)
-const saving = ref(false)
-const captureError = ref('')
-const capturedNote = ref<QuickNote | null>(null)
-const undoing = ref(false)
-const undoError = ref('')
+const contentFilter = ref<ContentFilter>('ALL')
+const ownerFilter = ref('ALL')
+const creatorFilter = ref('ALL')
+const createdResourceIds = ref<Set<string> | null>(null)
+const creatorLoading = ref(false)
+const creatorError = ref('')
+const loadMoreSentinel = ref<HTMLElement | null>(null)
+const autoLoadSupported = ref(true)
 let workbenchRequestVersion = 0
-let capturedTimer: number | null = null
+let creatorRequestVersion = 0
+let loadMoreObserver: IntersectionObserver | null = null
 
-const greeting = computed(() => {
-  const hour = new Date().getHours()
-  return hour < 12 ? '早上好' : hour < 18 ? '下午好' : '晚上好'
-})
-const displayName = computed(() => session.user?.displayName || session.user?.email?.split('@')[0] || '你好')
-const displayCount = computed(() => `${items.value.length}${hasMore.value ? '+' : ''}`)
-const activeTabTitle = computed(() => WORKBENCH_REASONS.find((item) => item.value === reason.value)?.title ?? '最近工作')
-const emptyCopy = computed(() => ({
-  EDITED: ['还没有编辑记录', '编辑过的文稿会出现在这里。'],
-  VIEWED: ['还没有浏览记录', '打开文稿后，可以从这里快速继续。'],
-  COLLABORATED: ['还没有协作记录', '参与评论或共同编辑后会出现在这里。'],
-  FAVORITE: ['还没有收藏', '点击文稿右侧的星标即可收藏。'],
-  CREATED: ['还没有创建内容', '创建第一篇文稿开始沉淀知识。'],
-}[reason.value]))
+const currentUserName = computed(() => session.user?.displayName || session.user?.email || '我')
+const ownerOptions = computed(() => [
+  { title: '所有', value: 'ALL' },
+  ...(session.activeWorkspace ? [{ title: session.activeWorkspace.name, value: session.activeWorkspace.id }] : []),
+])
+const creatorOptions = [
+  { title: '所有', value: 'ALL' },
+  { title: '我创建的', value: 'ME' },
+]
+const visibleItems = computed(() => items.value.filter((item) => {
+  if (contentFilter.value !== 'ALL' && item.contentType !== contentFilter.value) return false
+  if (ownerFilter.value !== 'ALL' && item.workspaceId !== ownerFilter.value) return false
+  if (creatorFilter.value === 'ME' && !createdResourceIds.value?.has(item.resourceId)) return false
+  return true
+}))
+const emptyLabel = computed(() => ({
+  EDITED: '还没有编辑过的文档',
+  VIEWED: '还没有浏览过的文档',
+  FAVORITE: '还没有点赞的文档',
+  COLLABORATED: '还没有评论过的文档',
+})[reason.value])
 
 onMounted(() => {
+  setupLoadMoreObserver()
   void loadWorkbench(true)
-  void loadNotifications()
 })
-onBeforeUnmount(() => { if (capturedTimer !== null) window.clearTimeout(capturedTimer) })
+
+onBeforeUnmount(() => {
+  loadMoreObserver?.disconnect()
+  loadMoreObserver = null
+})
 
 watch(reason, (value) => {
   const query = { ...route.query }
   if (value === 'EDITED') delete query.filter
   else query.filter = value
-  if (normalizeWorkbenchReason(route.query.filter) !== value || (value === 'EDITED' && 'filter' in route.query)) void router.replace({ query })
+  if (dashboardReason(route.query.filter) !== value || (value === 'EDITED' && 'filter' in route.query)) {
+    void router.replace({ path: route.path, query })
+  }
   void loadWorkbench(true)
 })
 watch(() => route.query.filter, (value) => {
-  const next = normalizeWorkbenchReason(value)
+  const next = dashboardReason(value)
   if (next !== reason.value) reason.value = next
 })
+watch(creatorFilter, (value) => {
+  if (value === 'ME' && createdResourceIds.value === null) void loadCreatedResourceIds()
+})
+watch(loadMoreSentinel, (target, previousTarget) => {
+  if (!loadMoreObserver) return
+  if (previousTarget) loadMoreObserver.unobserve(previousTarget)
+  if (target) loadMoreObserver.observe(target)
+})
+
+function setupLoadMoreObserver() {
+  if (typeof IntersectionObserver !== 'function') {
+    autoLoadSupported.value = false
+    return
+  }
+  loadMoreObserver = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) void loadWorkbench(false)
+  }, { rootMargin: '160px 0px' })
+}
+
+function rearmLoadMoreObserver() {
+  if (!loadMoreObserver || !hasMore.value) return
+  void nextTick(() => {
+    const target = loadMoreSentinel.value
+    if (!target || !loadMoreObserver) return
+    loadMoreObserver.unobserve(target)
+    loadMoreObserver.observe(target)
+  })
+}
+
+function dashboardReason(value: unknown): DashboardReason {
+  return DASHBOARD_REASONS.some((item) => item.value === value) ? value as DashboardReason : 'EDITED'
+}
 
 async function loadWorkbench(reset = false) {
   if (!reset && (loading.value || loadingMore.value || !hasMore.value)) return
@@ -85,9 +143,11 @@ async function loadWorkbench(reset = false) {
   if (reset) {
     loading.value = true
     items.value = []
-    hasMore.value = false
     nextOffset.value = 0
-  } else loadingMore.value = true
+    hasMore.value = false
+  } else {
+    loadingMore.value = true
+  }
   workbenchError.value = ''
   try {
     const page = await post<WorkbenchPage>('/api/v1/workbench/page', { reason: requestedReason, offset, limit: 25 })
@@ -95,8 +155,11 @@ async function loadWorkbench(reset = false) {
     items.value = reset ? page.items : deduplicateWorkbenchItems([...items.value, ...page.items])
     nextOffset.value = page.nextOffset
     hasMore.value = page.hasMore
+    rearmLoadMoreObserver()
   } catch (value) {
-    if (requestVersion === workbenchRequestVersion && requestedReason === reason.value) workbenchError.value = messageOf(value)
+    if (requestVersion === workbenchRequestVersion && requestedReason === reason.value) {
+      workbenchError.value = messageOf(value)
+    }
   } finally {
     if (requestVersion === workbenchRequestVersion && requestedReason === reason.value) {
       loading.value = false
@@ -105,66 +168,52 @@ async function loadWorkbench(reset = false) {
   }
 }
 
-async function loadNotifications() {
-  notificationsLoading.value = true
-  notificationsError.value = ''
-  try { notifications.value = await post('/api/v1/notifications/list', { unreadOnly: true, limit: 5 }) }
-  catch (value) { notificationsError.value = messageOf(value) }
-  finally { notificationsLoading.value = false }
-}
-
-async function createNote() {
-  const plainText = capture.value.trim()
-  if (!plainText || !session.activeWorkspace?.id || saving.value) return
-  saving.value = true
-  captureError.value = ''
+async function loadCreatedResourceIds() {
+  const requestVersion = ++creatorRequestVersion
+  creatorLoading.value = true
+  creatorError.value = ''
   try {
-    const note = await post<QuickNote>('/api/v1/quick-notes/create', {
-      workspaceId: session.activeWorkspace.id,
-      content: quickNoteDocument(plainText),
-      plainText,
-      source: 'HOME',
-      clientRequestId: createUuid(),
-      tagIds: [],
-    })
-    capture.value = ''
-    capturedNote.value = note
-    undoError.value = ''
-    if (capturedTimer !== null) window.clearTimeout(capturedTimer)
-    const noteId = note.id
-    const timer = window.setTimeout(() => {
-      if (capturedNote.value?.id === noteId) capturedNote.value = null
-      if (capturedTimer === timer) capturedTimer = null
-    }, 5_000)
-    capturedTimer = timer
-  } catch (value) { captureError.value = `${messageOf(value)}，输入内容已保留。` }
-  finally { saving.value = false }
-}
-
-async function undoCapture() {
-  if (!capturedNote.value || undoing.value) return
-  const note = capturedNote.value
-  undoing.value = true
-  undoError.value = ''
-  try {
-    await post('/api/v1/quick-notes/delete', { quickNoteId: note.id })
-    if (capturedNote.value?.id === note.id) {
-      capturedNote.value = null
-      if (capturedTimer !== null) window.clearTimeout(capturedTimer)
-      capturedTimer = null
+    const ids = new Set<string>()
+    let offset = 0
+    let more = true
+    while (more) {
+      const page = await post<WorkbenchPage>('/api/v1/workbench/page', { reason: 'CREATED', offset, limit: 100 })
+      if (requestVersion !== creatorRequestVersion) return
+      for (const item of page.items) ids.add(item.resourceId)
+      offset = page.nextOffset
+      more = page.hasMore
     }
-    ui.notify('已撤销刚才的小记')
+    createdResourceIds.value = ids
   } catch (value) {
-    if (capturedNote.value?.id === note.id) undoError.value = messageOf(value)
+    if (requestVersion === creatorRequestVersion) creatorError.value = messageOf(value)
+  } finally {
+    if (requestVersion === creatorRequestVersion) creatorLoading.value = false
   }
-  finally { undoing.value = false }
+}
+
+function createPage(kind: ResourceKind = 'DOCUMENT') {
+  ui.openCreate({
+    kind,
+    workspaceId: session.activeWorkspace?.id,
+    knowledgeBaseId: session.activeKnowledgeBases[0]?.id,
+    source: 'WORKBENCH',
+  })
+}
+
+function createKnowledgeBase() {
+  ui.openCreate({ kind: 'KNOWLEDGE_BASE', workspaceId: session.activeWorkspace?.id, source: 'WORKBENCH' })
+}
+
+async function chooseDocumentAction(action: typeof DOCUMENT_KINDS[number]) {
+  if (action.to) await router.push(action.to)
+  else if (action.kind) createPage(action.kind)
 }
 
 async function favorite(item: WorkbenchItem) {
   if (favoritePending.value.has(item.resourceId)) return
-  favoriteError.value = ''
   const previous = item.favorite
   const next = !previous
+  favoriteError.value = ''
   favoritePending.value = new Set(favoritePending.value).add(item.resourceId)
   item.favorite = next
   try {
@@ -183,199 +232,197 @@ async function favorite(item: WorkbenchItem) {
   }
 }
 
-async function openNotification(notification: Notification) {
-  notificationsError.value = ''
-  try {
-    if (!notification.readAt) await post('/api/v1/notifications/read', { notificationId: notification.id })
-    notifications.value = notifications.value.filter((item) => item.id !== notification.id)
-    await router.push(notificationDestination(notification) ?? '/app/notifications')
-  } catch (value) { notificationsError.value = messageOf(value) }
+function resourceDestination(item: WorkbenchItem) {
+  return `/app/kb/${encodeURIComponent(item.knowledgeBaseId)}/pages/${encodeURIComponent(item.resourceId)}`
 }
 
-function openWorkbenchCreate() {
-  const knowledgeBase = session.activeKnowledgeBases[0]
-  if (!knowledgeBase) {
-    ui.openCreate({ kind: 'KNOWLEDGE_BASE', workspaceId: session.activeWorkspace?.id, source: 'WORKBENCH' })
-    return
-  }
-  ui.openCreate({ knowledgeBaseId: knowledgeBase.id, workspaceId: knowledgeBase.workspaceId, source: 'WORKBENCH' })
+function contentLabel(type: Page['contentType']) {
+  return type === 'SPREADSHEET' ? '表格' : type === 'WHITEBOARD' ? '画板' : contentTypePresentation(type).label
 }
 
-function openKnowledgeBaseCreate() {
-  ui.openCreate({ kind: 'KNOWLEDGE_BASE', workspaceId: session.activeWorkspace?.id, source: 'WORKBENCH' })
-}
-
-function wrapCapture(before: string, after: string, placeholder: string) {
-  const editor = captureEditor.value
-  const start = editor?.selectionStart ?? capture.value.length
-  const end = editor?.selectionEnd ?? start
-  const selected = capture.value.slice(start, end) || placeholder
-  capture.value = `${capture.value.slice(0, start)}${before}${selected}${after}${capture.value.slice(end)}`
-  void nextTick(() => {
-    captureEditor.value?.focus()
-    captureEditor.value?.setSelectionRange(start + before.length, start + before.length + selected.length)
-  })
-}
-
-function insertTask() {
-  const editor = captureEditor.value
-  const start = editor?.selectionStart ?? capture.value.length
-  const prefix = start > 0 && capture.value[start - 1] !== '\n' ? '\n' : ''
-  const text = '- [ ] 待办事项'
-  capture.value = `${capture.value.slice(0, start)}${prefix}${text}${capture.value.slice(start)}`
-  void nextTick(() => {
-    captureEditor.value?.focus()
-    captureEditor.value?.setSelectionRange(start + prefix.length + 6, start + prefix.length + text.length)
-  })
-}
-
-function notificationLabel(type: string) {
-  return ({
-    COMMENT_MENTION: '在评论中提到了你', PAGE_MENTION: '在文稿中提到了你', INVITATION: '邀请你加入',
-    APPROVAL: '审批结果有更新', PUBLICATION: '关注的内容已发布', SHARE_COMMENT: '分享文稿收到新评论',
-    SHARE_APPROVAL_REQUEST: '有人申请访问分享', SHARE_APPROVAL_REVIEWED: '分享访问申请已有结果',
-  } as Record<string, string>)[type] ?? '有一条新消息'
-}
-
-function notificationDestination(value: Notification) {
-  if (value.type === 'PUBLICATION' && value.payload.publicationId) return `/p/${encodeURIComponent(value.payload.publicationId)}`
-  if (value.resourceType !== 'PAGE' || value.type === 'SHARE_APPROVAL_REVIEWED') return null
-  const suffix = value.type === 'SHARE_APPROVAL_REQUEST' ? '?manage=SHARE' : ''
-  if (value.payload.knowledgeBaseId) return `/app/kb/${encodeURIComponent(value.payload.knowledgeBaseId)}/pages/${encodeURIComponent(value.resourceId)}${suffix}`
-  return `/app/pages/${encodeURIComponent(value.resourceId)}${suffix}`
-}
-
-function notificationIcon(type: string) {
-  if (type.includes('MENTION')) return 'mdi-at'
-  if (type.includes('COMMENT')) return 'mdi-comment-text-outline'
-  if (type.includes('APPROVAL')) return 'mdi-account-check-outline'
-  if (type === 'INVITATION') return 'mdi-account-plus-outline'
-  if (type === 'PUBLICATION') return 'mdi-publish'
-  return 'mdi-bell-outline'
+function activityTime(value: string) {
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return ''
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 </script>
 
 <template>
-  <div class="page-shell workbench-page">
-    <header class="page-heading workbench-heading">
-      <div><h1>{{ greeting }}，{{ displayName }}</h1><p>继续最近工作；快速记录会保存到“{{ session.activeWorkspace?.name || '当前空间' }}”。</p></div>
-      <v-btn color="primary" prepend-icon="mdi-plus" @click="openWorkbenchCreate">新建内容</v-btn>
-    </header>
+  <main class="page-shell workbench-page">
+    <div class="workbench-content">
+      <h1>开始</h1>
 
-    <v-card class="section-card quick-capture mb-6 pa-4" :class="{ expanded: captureExpanded }">
-      <div v-if="captureExpanded" class="capture-toolbar" aria-label="小记格式工具">
-        <v-btn icon="mdi-format-bold" aria-label="加粗" variant="text" size="small" @click="wrapCapture('**', '**', '重点内容')" />
-        <v-btn icon="mdi-format-italic" aria-label="斜体" variant="text" size="small" @click="wrapCapture('*', '*', '强调内容')" />
-        <v-btn icon="mdi-checkbox-marked-outline" aria-label="插入任务" variant="text" size="small" @click="insertTask" />
-        <v-btn icon="mdi-link-variant" aria-label="插入链接" variant="text" size="small" @click="wrapCapture('[', '](https://example.com)', '链接标题')" />
-        <span>支持段落、任务、链接和图片语法</span>
-      </div>
-      <div class="capture-main">
-        <v-avatar color="primary" variant="tonal" size="38"><v-icon>mdi-lightning-bolt-outline</v-icon></v-avatar>
-        <textarea ref="captureEditor" v-model="capture" :rows="captureExpanded ? 5 : 1" aria-label="快速记录" placeholder="随手记下想法，按 Ctrl/⌘ + Enter 保存为小记…" @keydown.ctrl.enter.prevent="createNote" @keydown.meta.enter.prevent="createNote" />
-        <v-btn :icon="captureExpanded ? 'mdi-arrow-collapse-vertical' : 'mdi-arrow-expand-vertical'" :aria-label="captureExpanded ? '收起快速记录' : '展开快速记录'" variant="text" size="small" @click="captureExpanded = !captureExpanded" />
-        <v-btn color="primary" variant="tonal" :loading="saving" :disabled="!capture.trim() || !session.activeWorkspace" @click="createNote">记一笔</v-btn>
-      </div>
-    </v-card>
-    <v-alert v-if="captureError" type="error" variant="tonal" closable class="mb-4" @click:close="captureError = ''">{{ captureError }}</v-alert>
-    <v-alert v-if="capturedNote" type="success" variant="tonal" class="mb-4"><div class="capture-success"><span>{{ undoError ? `撤销失败：${undoError}` : '已记下，可在小记中继续整理。' }}</span><v-btn variant="text" size="small" :loading="undoing" @click="undoCapture">撤销</v-btn></div></v-alert>
-    <v-alert v-if="favoriteError" type="error" variant="tonal" closable class="mb-4" @click:close="favoriteError = ''">收藏操作失败：{{ favoriteError }}</v-alert>
+      <nav class="quick-actions" aria-label="快捷创建">
+        <v-menu location="bottom start" :close-on-content-click="true">
+          <template #activator="{ props }">
+            <button v-bind="props" type="button" class="quick-action" data-testid="create-document">
+              <span class="quick-icon quick-icon-document"><v-icon size="21">mdi-file-document-outline</v-icon></span>
+              <span class="quick-copy"><strong>新建文档</strong><small>文档、表格、画板、数据表</small></span>
+              <v-icon class="quick-chevron" size="16">mdi-chevron-down</v-icon>
+            </button>
+          </template>
+          <v-list class="create-menu" density="compact" min-width="188">
+            <v-list-item v-for="action in DOCUMENT_KINDS" :key="action.title" :prepend-icon="action.icon" :title="action.title" @click="chooseDocumentAction(action)" />
+          </v-list>
+        </v-menu>
+        <button type="button" class="quick-action" data-testid="create-knowledge-base" @click="createKnowledgeBase">
+          <span class="quick-icon quick-icon-knowledge"><v-icon size="21">mdi-book-open-page-variant-outline</v-icon></span>
+          <span class="quick-copy"><strong>新建知识库</strong><small>使用知识库整理知识</small></span>
+        </button>
+        <router-link class="quick-action" to="/app/templates">
+          <span class="quick-icon quick-icon-template"><v-icon size="21">mdi-view-grid-outline</v-icon></span>
+          <span class="quick-copy"><strong>模板中心</strong><small>从模板中获取灵感</small></span>
+        </router-link>
+        <button type="button" class="quick-action" data-testid="ai-write" @click="createPage('DOCUMENT')">
+          <span class="quick-icon quick-icon-ai"><v-icon size="21">mdi-creation-outline</v-icon></span>
+          <span class="quick-copy"><strong>AI 帮你写</strong><small>AI 助手帮你一键生成文档</small></span>
+        </button>
+      </nav>
 
-    <div class="workbench-grid mb-8">
-      <v-card class="section-card recent-card">
-        <v-card-title class="panel-title px-5 pt-5"><span>{{ activeTabTitle }}</span><v-spacer /><span class="text-caption text-medium-emphasis">{{ displayCount }} 项</span></v-card-title>
-        <v-tabs v-model="reason" color="primary" class="px-3" show-arrows><v-tab v-for="tab in WORKBENCH_REASONS" :key="tab.value" :value="tab.value">{{ tab.title }}</v-tab></v-tabs>
-        <v-divider />
-        <v-progress-linear v-if="loading" indeterminate color="primary" />
-        <v-alert v-if="workbenchError" type="error" variant="tonal" class="ma-4"><div class="retry-row"><span>{{ workbenchError }}</span><v-btn size="small" variant="text" @click="loadWorkbench(true)">重试</v-btn></div></v-alert>
-        <div v-if="items.length" class="workbench-list">
-          <div v-for="item in items" :key="item.resourceId" class="workbench-row">
-            <router-link class="workbench-link" :to="`/app/kb/${item.knowledgeBaseId}/pages/${item.resourceId}`">
-              <v-avatar :color="contentTypePresentation(item.contentType).color" variant="tonal" rounded="lg" size="38"><v-icon size="20">{{ contentTypePresentation(item.contentType).icon }}</v-icon></v-avatar>
-              <div class="workbench-copy"><strong>{{ item.title || `无标题${contentTypePresentation(item.contentType).label}` }}</strong><p>{{ item.knowledgeBaseName }} / {{ item.path }}</p><footer><v-chip size="x-small" variant="tonal">{{ publicationStatusLabel(item.publicationStatus) }}</v-chip><span>{{ contentTypePresentation(item.contentType).label }} · {{ relativeTime(item.activityAt) }}</span><span v-if="item.collaborators.length" class="collaborators" :aria-label="`协作者：${item.collaborators.map(person => person.displayName || person.email).join('、')}`"><v-avatar v-for="person in item.collaborators.slice(0, 3)" :key="person.userId" size="22" color="secondary">{{ (person.displayName || person.email).slice(0, 1).toUpperCase() }}</v-avatar></span></footer></div>
-            </router-link>
-            <v-btn :icon="item.favorite ? 'mdi-star' : 'mdi-star-outline'" :color="item.favorite ? 'warning' : undefined" :aria-label="item.favorite ? `取消收藏 ${item.title}` : `收藏 ${item.title}`" variant="text" :loading="favoritePending.has(item.resourceId)" @click="favorite(item)" />
+      <section class="documents-section" aria-labelledby="documents-title">
+        <h2 id="documents-title">文档</h2>
+        <div class="documents-toolbar">
+          <div class="document-tabs" role="tablist" aria-label="文档动态筛选">
+            <button v-for="tab in DASHBOARD_REASONS" :key="tab.value" type="button" role="tab" :aria-selected="reason === tab.value" :class="{ active: reason === tab.value }" @click="reason = tab.value">{{ tab.title }}</button>
+          </div>
+
+          <div class="document-filters" aria-label="文档筛选">
+            <v-menu location="bottom end">
+              <template #activator="{ props }"><button v-bind="props" type="button" class="filter-button">类型<v-icon size="15">mdi-chevron-down</v-icon></button></template>
+              <v-list density="compact" min-width="160">
+                <v-list-item v-for="option in CONTENT_FILTERS" :key="option.value" :title="option.title" @click="contentFilter = option.value"><template #append><v-icon v-if="contentFilter === option.value" size="17">mdi-check</v-icon></template></v-list-item>
+              </v-list>
+            </v-menu>
+            <v-menu location="bottom end">
+              <template #activator="{ props }"><button v-bind="props" type="button" class="filter-button">归属<v-icon size="15">mdi-chevron-down</v-icon></button></template>
+              <v-list density="compact" min-width="180">
+                <v-list-item v-for="option in ownerOptions" :key="option.value" :title="option.title" @click="ownerFilter = option.value"><template #append><v-icon v-if="ownerFilter === option.value" size="17">mdi-check</v-icon></template></v-list-item>
+              </v-list>
+            </v-menu>
+            <v-menu location="bottom end">
+              <template #activator="{ props }"><button v-bind="props" type="button" class="filter-button">创建者<v-icon size="15">mdi-chevron-down</v-icon></button></template>
+              <v-list density="compact" min-width="180">
+                <v-list-item v-for="option in creatorOptions" :key="option.value" :title="option.title" @click="creatorFilter = option.value"><template #append><v-icon v-if="creatorFilter === option.value" size="17">mdi-check</v-icon></template></v-list-item>
+              </v-list>
+            </v-menu>
           </div>
         </div>
-        <div v-else-if="!loading && !workbenchError" class="empty-state compact"><div><v-icon size="42">mdi-file-clock-outline</v-icon><h3>{{ emptyCopy[0] }}</h3><p>{{ emptyCopy[1] }}</p><v-btn v-if="reason === 'CREATED'" color="primary" variant="tonal" @click="openWorkbenchCreate">新建内容</v-btn></div></div>
-        <div v-if="hasMore" class="load-more"><v-btn variant="outlined" :loading="loadingMore" @click="loadWorkbench(false)">加载更多</v-btn></div>
-      </v-card>
 
-      <v-card class="section-card notifications-card">
-        <v-card-title class="panel-title px-5 pt-5"><span>待处理消息</span><v-spacer /><v-btn to="/app/notifications" variant="text" size="small">查看全部</v-btn></v-card-title>
-        <v-progress-linear v-if="notificationsLoading" indeterminate color="primary" />
-        <v-alert v-if="notificationsError" type="error" variant="tonal" class="ma-4"><div class="retry-row"><span>{{ notificationsError }}</span><v-btn size="small" variant="text" @click="loadNotifications">重试</v-btn></div></v-alert>
-        <div v-if="notifications.length" class="notification-list">
-          <button v-for="note in notifications" :key="note.id" type="button" class="notification-row" @click="openNotification(note)"><v-avatar color="primary" variant="tonal" size="36"><v-icon size="19">{{ notificationIcon(note.type) }}</v-icon></v-avatar><span><strong>{{ notificationLabel(note.type) }}<small v-if="note.occurrenceCount > 1"> · {{ note.occurrenceCount }} 次</small></strong><p>{{ note.payload.preview || note.payload.title || '有新的协作动态' }}</p><time>{{ relativeTime(note.updatedAt) }}</time></span><v-icon size="18">mdi-chevron-right</v-icon></button>
+        <div v-if="workbenchError" class="inline-error" role="alert"><span>文档加载失败：{{ workbenchError }}</span><button type="button" @click="loadWorkbench(true)">重试</button></div>
+        <div v-if="favoriteError" class="inline-error" role="alert"><span>操作失败：{{ favoriteError }}</span><button type="button" @click="favoriteError = ''">关闭</button></div>
+        <div v-if="creatorError" class="inline-error" role="alert"><span>创建者筛选加载失败：{{ creatorError }}</span><button type="button" @click="loadCreatedResourceIds">重试</button></div>
+
+        <table class="document-list" aria-labelledby="documents-title" :aria-busy="loading || creatorLoading">
+          <colgroup>
+            <col style="width: 46.2%">
+            <col style="width: 32%">
+            <col style="width: 17%">
+            <col style="width: 4.8%">
+          </colgroup>
+          <tbody v-if="loading || creatorLoading">
+            <tr v-for="index in 4" :key="index" class="document-row skeleton-row" aria-hidden="true">
+              <td><span class="skeleton title-skeleton" /></td>
+              <td><span class="skeleton owner-skeleton" /></td>
+              <td><span class="skeleton time-skeleton" /></td>
+              <td><span class="skeleton action-skeleton" /></td>
+            </tr>
+          </tbody>
+          <tbody v-else>
+            <tr v-for="item in visibleItems" :key="item.resourceId" class="document-row">
+              <td>
+                <router-link class="document-primary" :to="resourceDestination(item)">
+                  <span class="resource-icon" :class="`type-${item.contentType.toLowerCase()}`"><v-icon size="19">{{ contentTypePresentation(item.contentType).icon }}</v-icon></span>
+                  <span class="document-title"><strong>{{ item.title || `无标题${contentLabel(item.contentType)}` }}</strong></span>
+                </router-link>
+              </td>
+              <td class="document-owner" :title="`${currentUserName} / ${item.knowledgeBaseName}`">
+                <router-link to="/app/profile">{{ currentUserName }}</router-link><span> / </span><router-link :to="`/app/kb/${item.knowledgeBaseId}`">{{ item.knowledgeBaseName }}</router-link>
+              </td>
+              <td class="document-time"><time :datetime="item.activityAt">{{ activityTime(item.activityAt) }}</time></td>
+              <td class="document-actions">
+                <v-menu location="bottom end">
+                  <template #activator="{ props }">
+                    <button v-bind="props" type="button" class="more-button" :aria-label="`${item.title || '无标题文档'}的更多操作`"><v-progress-circular v-if="favoritePending.has(item.resourceId)" indeterminate size="16" width="2" /><v-icon v-else size="19">mdi-dots-horizontal</v-icon></button>
+                  </template>
+                  <v-list density="compact" min-width="168">
+                    <v-list-item prepend-icon="mdi-open-in-new" title="打开" @click="router.push(resourceDestination(item))" />
+                    <v-list-item :prepend-icon="item.favorite ? 'mdi-heart' : 'mdi-heart-outline'" :title="item.favorite ? '取消点赞' : '点赞'" @click="favorite(item)" />
+                  </v-list>
+                </v-menu>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="!loading && !creatorLoading && !workbenchError && !visibleItems.length" class="document-empty"><v-icon size="34">mdi-file-document-outline</v-icon><p>{{ items.length ? '没有符合筛选条件的文档' : emptyLabel }}</p></div>
+        <div v-if="hasMore" ref="loadMoreSentinel" class="load-more-sentinel" aria-live="polite">
+          <span v-if="loadingMore" class="loading-more-status"><v-progress-circular indeterminate size="15" width="2" />正在加载</span>
+          <button v-else-if="!autoLoadSupported" type="button" @click="loadWorkbench(false)">加载更多</button>
         </div>
-        <div v-else-if="!notificationsLoading && !notificationsError" class="empty-state compact"><div><v-icon size="40">mdi-bell-sleep-outline</v-icon><h3>没有新消息</h3><p>提及、评论和审批会出现在这里。</p></div></div>
-      </v-card>
+      </section>
     </div>
-
-    <section class="mb-8">
-      <div class="section-heading"><div><h2>知识库</h2><p>{{ session.activeWorkspace?.name || '当前空间' }}中的知识内容</p></div><div><v-btn v-if="session.activeWorkspace" :to="`/app/w/${session.activeWorkspace.id}`" variant="text">查看全部</v-btn><v-btn variant="text" prepend-icon="mdi-plus" @click="openKnowledgeBaseCreate">新建</v-btn></div></div>
-      <div v-if="session.activeKnowledgeBases.length" class="knowledge-base-grid"><v-card v-for="kb in session.activeKnowledgeBases" :key="kb.id" :to="`/app/kb/${kb.id}`" class="section-card kb-card pa-5"><div class="d-flex align-center"><v-avatar color="primary" variant="tonal" rounded="lg" class="mr-4">{{ kb.icon || '📘' }}</v-avatar><div class="kb-copy"><strong>{{ kb.name }}</strong><p>{{ kb.description || (kb.ownerType === 'PERSONAL' ? '个人知识库' : '空间知识库') }}</p></div><v-spacer /><v-icon>mdi-chevron-right</v-icon></div></v-card></div>
-      <v-card v-else class="section-card empty-state compact"><div><v-icon size="42">mdi-book-plus-outline</v-icon><h3>还没有知识库</h3><p>先创建知识库，再开始添加文档和结构化内容。</p><v-btn color="primary" @click="openKnowledgeBaseCreate">新建知识库</v-btn></div></v-card>
-    </section>
-
-    <section>
-      <div class="section-heading"><div><h2>我的空间</h2><p>在个人与组织空间之间切换</p></div></div>
-      <div class="workspace-grid"><v-card v-for="workspace in session.workspaces" :key="workspace.id" :to="`/app/w/${workspace.id}`" class="section-card workspace-card pa-4"><v-avatar color="secondary" variant="tonal" rounded="lg" class="mr-3">{{ workspace.name.slice(0, 1) }}</v-avatar><div><strong>{{ workspace.name }}</strong><p>{{ workspace.workspaceType === 'PERSONAL' ? '个人空间' : '组织空间' }}</p></div><v-spacer /><v-icon>mdi-chevron-right</v-icon></v-card></div>
-    </section>
-  </div>
+  </main>
 </template>
 
 <style scoped>
-.workbench-page { max-width: 1320px; }
-.workbench-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr); gap: 16px; align-items: start; }
-.panel-title, .capture-success, .retry-row, .section-heading, .workspace-card { display: flex; align-items: center; }
-.quick-capture { overflow: hidden; }
-.capture-main { display: flex; align-items: flex-start; gap: 12px; }
-.capture-main textarea { flex: 1; min-width: 0; border: 0; outline: 0; resize: none; padding: 8px 2px; color: rgb(var(--v-theme-on-surface)); background: transparent; font: inherit; line-height: 1.65; }
-.capture-toolbar { display: flex; align-items: center; gap: 2px; margin: -4px 0 8px 48px; color: rgba(var(--v-theme-on-surface), .56); }
-.capture-toolbar span { margin-left: 8px; font-size: 12px; }
-.capture-success, .retry-row { justify-content: space-between; gap: 12px; width: 100%; }
-.recent-card, .notifications-card { overflow: hidden; }
-.workbench-list { padding: 8px 12px 12px; }
-.workbench-row { display: flex; align-items: center; border-radius: 12px; transition: background .15s ease; }
-.workbench-row:hover, .workbench-row:focus-within { background: rgba(var(--v-theme-primary), .045); }
-.workbench-link { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; padding: 12px; color: inherit; text-decoration: none; }
-.workbench-copy { min-width: 0; }
-.workbench-copy strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workbench-copy p, .kb-copy p, .workspace-card p, .notification-row p { margin: 3px 0 0; color: rgba(var(--v-theme-on-surface), .58); font-size: 13px; }
-.workbench-copy footer { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 7px; color: rgba(var(--v-theme-on-surface), .58); font-size: 12px; }
-.collaborators { display: flex; }
-.collaborators :deep(.v-avatar + .v-avatar) { margin-left: -6px; border: 2px solid rgb(var(--v-theme-surface)); }
-.load-more { display: flex; justify-content: center; padding: 4px 16px 20px; }
-.notification-list { padding: 8px 12px 16px; }
-.notification-row { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 11px; border: 0; border-radius: 12px; color: inherit; background: transparent; text-align: left; cursor: pointer; }
-.notification-row:hover, .notification-row:focus-visible { background: rgba(var(--v-theme-primary), .045); outline: none; }
-.notification-row strong { display: block; font-size: 14px; }
-.notification-row strong small { font-weight: 500; }
-.notification-row p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.notification-row time { color: rgba(var(--v-theme-on-surface), .46); font-size: 12px; }
-.empty-state.compact { min-height: 210px; padding: 28px; }
-.section-heading { justify-content: space-between; gap: 16px; margin-bottom: 14px; }
-.section-heading h2 { margin: 0; font-size: 19px; }
-.section-heading p { margin: 4px 0 0; color: rgba(var(--v-theme-on-surface), .56); font-size: 13px; }
-.knowledge-base-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.kb-card { color: inherit; text-decoration: none; }
-.kb-copy { min-width: 0; }
-.kb-copy p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workspace-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-.workspace-card { color: inherit; text-decoration: none; }
-.workspace-card p { margin-bottom: 0; }
-@media (max-width: 1050px) {
-  .workbench-grid { grid-template-columns: 1fr; }
-  .workspace-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 700px) {
-  .workbench-heading, .section-heading { align-items: flex-start; flex-direction: column; }
-  .capture-main { flex-wrap: wrap; }
-  .capture-main textarea { flex-basis: calc(100% - 52px); }
-  .capture-toolbar { margin-left: 0; overflow-x: auto; }
-  .capture-toolbar span { display: none; }
-  .knowledge-base-grid, .workspace-grid { grid-template-columns: 1fr; }
-  .workbench-copy footer .v-chip { display: none; }
-}
+.workbench-page { width: 100%; max-width: none; min-height: 100vh; margin: 0; padding: 26px 36px 56px; color: #262626; background: #fff; }
+.workbench-content { width: 100%; }
+h1 { height: 28px; margin: 0 0 22px; font-size: 18px; font-weight: 500; line-height: 28px; letter-spacing: 0; }
+.quick-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 28px; }
+.quick-action { display: flex; width: 259px; height: 55px; flex: 0 0 259px; align-items: center; gap: 12px; padding: 0 12px; border: 1px solid #e7e9e8; border-radius: 8px; color: #262626; background: #fff; font: inherit; text-align: left; text-decoration: none; cursor: pointer; transition: border-color .16s ease, background-color .16s ease; }
+.quick-action:hover { border-color: #c9cecb; background: #fafbfa; }
+.quick-action:focus-visible, .document-tabs button:focus-visible, .filter-button:focus-visible, .more-button:focus-visible, .load-more-sentinel button:focus-visible { outline: 2px solid #1677ff; outline-offset: 2px; }
+.quick-icon { display: grid; width: 32px; height: 32px; flex: 0 0 32px; place-items: center; border-radius: 7px; }
+.quick-icon-document { color: #3978f6; background: #eef4ff; }
+.quick-icon-knowledge { color: #2a9f72; background: #edf8f3; }
+.quick-icon-template { color: #7c61da; background: #f3f0ff; }
+.quick-icon-ai { color: #16a36a; background: #edfaf4; }
+.quick-copy { display: flex; min-width: 0; flex-direction: column; }
+.quick-copy strong { overflow: hidden; font-size: 14px; font-weight: 500; line-height: 21px; text-overflow: ellipsis; white-space: nowrap; }
+.quick-copy small { overflow: hidden; color: #8a8f8d; font-size: 12px; font-weight: 400; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
+.quick-chevron { margin-left: auto; color: #8c8c8c; }
+.create-menu { padding-block: 6px; }
+.documents-section h2 { height: 28px; margin: 0 0 20px; font-size: 18px; font-weight: 500; line-height: 28px; }
+.documents-toolbar { display: flex; min-height: 36px; align-items: center; justify-content: space-between; gap: 16px; }
+.document-tabs { display: inline-flex; height: 36px; align-items: center; padding: 2px; border-radius: 8px; background: rgba(0, 0, 0, .04); }
+.document-tabs button { height: 32px; padding: 4px 16px; border: 0; border-radius: 6px; color: #595959; background: transparent; font: inherit; font-size: 14px; line-height: 24px; white-space: nowrap; cursor: pointer; }
+.document-tabs button.active { color: #262626; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .05); }
+.document-filters { display: flex; align-items: center; gap: 3px; }
+.filter-button { display: inline-flex; height: 32px; align-items: center; gap: 3px; padding: 0 8px; border: 0; border-radius: 6px; color: #595959; background: transparent; font: inherit; font-size: 14px; cursor: pointer; }
+.filter-button:hover { color: #262626; background: rgba(0, 0, 0, .035); }
+.inline-error { display: flex; min-height: 40px; align-items: center; justify-content: space-between; gap: 16px; margin-top: 12px; padding: 8px 12px; border-radius: 6px; color: #cf1322; background: #fff1f0; font-size: 13px; }
+.inline-error button { border: 0; color: inherit; background: transparent; font: inherit; font-weight: 500; cursor: pointer; }
+.document-list { width: 100%; margin-top: 17px; border-collapse: collapse; table-layout: fixed; }
+.document-row { height: 65px; background: #fafafa; }
+.document-row > td { height: 65px; padding: 16px 1px; border-bottom: 1px solid rgba(0, 0, 0, .04); vertical-align: middle; }
+.document-primary { display: flex; min-width: 0; align-items: center; gap: 8px; color: inherit; text-decoration: none; }
+.resource-icon { display: grid; width: 32px; height: 32px; flex: 0 0 32px; place-items: center; color: #3978f6; }
+.resource-icon.type-whiteboard { color: #7c61da; }
+.resource-icon.type-spreadsheet { color: #2a9f72; }
+.resource-icon.type-database { color: #d46b08; }
+.document-title { display: flex; min-width: 0; }
+.document-title strong { overflow: hidden; color: #262626; font-size: 14px; font-weight: 400; line-height: 22px; text-overflow: ellipsis; white-space: nowrap; }
+.document-owner { overflow: hidden; color: #8a8f8d; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.document-owner a { color: inherit; text-decoration: none; }
+.document-owner a:hover { color: #595959; text-decoration: underline; text-underline-offset: 2px; }
+.document-time time { color: #8a8f8d; font-size: 14px; white-space: nowrap; }
+.document-actions { text-align: center; }
+.more-button { display: inline-grid; width: 32px; height: 32px; place-items: center; border: 0; border-radius: 6px; color: #8a8f8d; background: transparent; cursor: pointer; opacity: 0; }
+.document-row:hover .more-button, .more-button:focus-visible, .more-button[aria-expanded="true"] { opacity: 1; }
+.more-button:hover { color: #262626; background: rgba(0, 0, 0, .04); }
+.skeleton { display: block; height: 12px; border-radius: 6px; background: linear-gradient(90deg, #f2f3f2 25%, #fafafa 37%, #f2f3f2 63%); background-size: 400% 100%; animation: shimmer 1.4s ease infinite; }
+.title-skeleton { width: min(240px, 75%); }
+.owner-skeleton { width: 150px; }
+.time-skeleton { width: 70px; }
+.action-skeleton { width: 22px; margin-inline: auto; }
+.document-empty { display: grid; min-height: 196px; place-items: center; align-content: center; gap: 8px; color: #b0b3b1; }
+.document-empty p { margin: 0; font-size: 14px; }
+.load-more-sentinel { display: flex; min-height: 1px; justify-content: center; padding-top: 1px; }
+.loading-more-status { display: inline-flex; height: 32px; align-items: center; gap: 7px; color: #8a8f8d; font-size: 13px; }
+.load-more-sentinel button { height: 28px; margin-top: 7px; padding: 0 9px; border: 0; border-radius: 5px; color: #8a8f8d; background: transparent; font: inherit; font-size: 13px; cursor: pointer; }
+.load-more-sentinel button:hover { color: #595959; background: rgba(0, 0, 0, .035); }
+@keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+@media (max-width: 820px) { .workbench-page { padding: 22px 24px 48px; } .documents-toolbar { align-items: flex-start; flex-direction: column; } .document-filters { align-self: flex-end; } .document-owner { display: none; } .document-list col:nth-child(1) { width: 77% !important; } .document-list col:nth-child(2) { width: 0 !important; } .document-list col:nth-child(3) { width: 18% !important; } .document-list col:nth-child(4) { width: 5% !important; } .more-button { opacity: 1; } }
+@media (max-width: 560px) { .workbench-page { padding: 20px 16px 40px; } .quick-actions { gap: 8px; } .quick-action { width: 100%; height: 55px; flex-basis: 100%; } .document-tabs { width: 100%; height: auto; overflow-x: auto; } .document-tabs button { flex: 1 0 auto; padding-inline: 12px; } .document-filters { width: 100%; justify-content: flex-end; } .document-time { display: none; } .document-list col:nth-child(1) { width: 92% !important; } .document-list col:nth-child(3) { width: 0 !important; } .document-list col:nth-child(4) { width: 8% !important; } }
+@media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
 </style>
