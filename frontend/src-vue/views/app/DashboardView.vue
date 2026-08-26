@@ -14,7 +14,7 @@ type ContentFilter = 'ALL' | Page['contentType']
 const DASHBOARD_REASONS: Array<{ title: string; value: DashboardReason }> = [
   { title: '编辑过', value: 'EDITED' },
   { title: '浏览过', value: 'VIEWED' },
-  { title: '我点赞的', value: 'FAVORITE' },
+  { title: '我收藏的', value: 'FAVORITE' },
   { title: '我评论过', value: 'COLLABORATED' },
 ]
 const CONTENT_FILTERS: Array<{ title: string; value: ContentFilter }> = [
@@ -57,11 +57,11 @@ let workbenchRequestVersion = 0
 let creatorRequestVersion = 0
 let loadMoreObserver: IntersectionObserver | null = null
 
-const currentUserName = computed(() => session.user?.displayName || session.user?.email || '我')
 const ownerOptions = computed(() => [
   { title: '所有', value: 'ALL' },
-  ...(session.activeWorkspace ? [{ title: session.activeWorkspace.name, value: session.activeWorkspace.id }] : []),
+  ...session.workspaces.map((workspace) => ({ title: workspace.name, value: workspace.id })),
 ])
+const workspaceById = computed(() => new Map(session.workspaces.map((workspace) => [workspace.id, workspace])))
 const creatorOptions = [
   { title: '所有', value: 'ALL' },
   { title: '我创建的', value: 'ME' },
@@ -75,7 +75,7 @@ const visibleItems = computed(() => items.value.filter((item) => {
 const emptyLabel = computed(() => ({
   EDITED: '还没有编辑过的文档',
   VIEWED: '还没有浏览过的文档',
-  FAVORITE: '还没有点赞的文档',
+  FAVORITE: '还没有收藏的文档',
   COLLABORATED: '还没有评论过的文档',
 })[reason.value])
 
@@ -236,6 +236,22 @@ function resourceDestination(item: WorkbenchItem) {
   return `/app/kb/${encodeURIComponent(item.knowledgeBaseId)}/pages/${encodeURIComponent(item.resourceId)}`
 }
 
+function workspaceDestination(workspaceId: string) {
+  return `/app/w/${encodeURIComponent(workspaceId)}`
+}
+
+function workspaceName(workspaceId: string) {
+  return workspaceById.value.get(workspaceId)?.name ?? '未知空间'
+}
+
+function collaboratorName(person: WorkbenchItem['collaborators'][number]) {
+  return person.displayName || person.email
+}
+
+function collaboratorInitial(person: WorkbenchItem['collaborators'][number]) {
+  return collaboratorName(person).trim().slice(0, 1).toUpperCase() || 'U'
+}
+
 function contentLabel(type: Page['contentType']) {
   return type === 'SPREADSHEET' ? '表格' : type === 'WHITEBOARD' ? '画板' : contentTypePresentation(type).label
 }
@@ -274,10 +290,10 @@ function activityTime(value: string) {
           <span class="quick-icon quick-icon-template"><v-icon size="21">mdi-view-grid-outline</v-icon></span>
           <span class="quick-copy"><strong>模板中心</strong><small>从模板中获取灵感</small></span>
         </router-link>
-        <button type="button" class="quick-action" data-testid="ai-write" @click="createPage('DOCUMENT')">
+        <router-link to="/app/ai" class="quick-action" data-testid="ai-write">
           <span class="quick-icon quick-icon-ai"><v-icon size="21">mdi-creation-outline</v-icon></span>
           <span class="quick-copy"><strong>AI 帮你写</strong><small>AI 助手帮你一键生成文档</small></span>
-        </button>
+        </router-link>
       </nav>
 
       <section class="documents-section" aria-labelledby="documents-title">
@@ -310,7 +326,7 @@ function activityTime(value: string) {
         </div>
 
         <div v-if="workbenchError" class="inline-error" role="alert"><span>文档加载失败：{{ workbenchError }}</span><button type="button" @click="loadWorkbench(true)">重试</button></div>
-        <div v-if="favoriteError" class="inline-error" role="alert"><span>操作失败：{{ favoriteError }}</span><button type="button" @click="favoriteError = ''">关闭</button></div>
+        <div v-if="favoriteError" class="inline-error" role="alert"><span>收藏操作失败：{{ favoriteError }}</span><button type="button" @click="favoriteError = ''">关闭</button></div>
         <div v-if="creatorError" class="inline-error" role="alert"><span>创建者筛选加载失败：{{ creatorError }}</span><button type="button" @click="loadCreatedResourceIds">重试</button></div>
 
         <table class="document-list" aria-labelledby="documents-title" :aria-busy="loading || creatorLoading">
@@ -333,11 +349,29 @@ function activityTime(value: string) {
               <td>
                 <router-link class="document-primary" :to="resourceDestination(item)">
                   <span class="resource-icon" :class="`type-${item.contentType.toLowerCase()}`"><v-icon size="19">{{ contentTypePresentation(item.contentType).icon }}</v-icon></span>
-                  <span class="document-title"><strong>{{ item.title || `无标题${contentLabel(item.contentType)}` }}</strong></span>
+                  <span class="document-title">
+                    <strong>{{ item.title || `无标题${contentLabel(item.contentType)}` }}</strong>
+                    <span
+                      v-if="item.collaborators.length"
+                      class="document-collaborators"
+                      role="img"
+                      :aria-label="`协作者：${item.collaborators.map(collaboratorName).join('、')}`"
+                    >
+                      <v-avatar
+                        v-for="person in item.collaborators.slice(0, 3)"
+                        :key="person.userId"
+                        class="collaborator-avatar"
+                        color="#eef0f3"
+                        size="22"
+                        aria-hidden="true"
+                      >{{ collaboratorInitial(person) }}</v-avatar>
+                      <span v-if="item.collaborators.length > 3" class="collaborator-overflow" aria-hidden="true">+{{ item.collaborators.length - 3 }}</span>
+                    </span>
+                  </span>
                 </router-link>
               </td>
-              <td class="document-owner" :title="`${currentUserName} / ${item.knowledgeBaseName}`">
-                <router-link to="/app/profile">{{ currentUserName }}</router-link><span> / </span><router-link :to="`/app/kb/${item.knowledgeBaseId}`">{{ item.knowledgeBaseName }}</router-link>
+              <td class="document-owner" :title="`${workspaceName(item.workspaceId)} / ${item.knowledgeBaseName}`">
+                <router-link v-if="workspaceById.has(item.workspaceId)" :to="workspaceDestination(item.workspaceId)">{{ workspaceName(item.workspaceId) }}</router-link><span v-else>{{ workspaceName(item.workspaceId) }}</span><span> / </span><router-link :to="`/app/kb/${item.knowledgeBaseId}`">{{ item.knowledgeBaseName }}</router-link>
               </td>
               <td class="document-time"><time :datetime="item.activityAt">{{ activityTime(item.activityAt) }}</time></td>
               <td class="document-actions">
@@ -347,7 +381,7 @@ function activityTime(value: string) {
                   </template>
                   <v-list density="compact" min-width="168">
                     <v-list-item prepend-icon="mdi-open-in-new" title="打开" @click="router.push(resourceDestination(item))" />
-                    <v-list-item :prepend-icon="item.favorite ? 'mdi-heart' : 'mdi-heart-outline'" :title="item.favorite ? '取消点赞' : '点赞'" @click="favorite(item)" />
+                    <v-list-item :prepend-icon="item.favorite ? 'mdi-star' : 'mdi-star-outline'" :title="item.favorite ? '取消收藏' : '收藏'" @click="favorite(item)" />
                   </v-list>
                 </v-menu>
               </td>
@@ -400,15 +434,18 @@ h1 { height: 28px; margin: 0 0 22px; font-size: 18px; font-weight: 500; line-hei
 .resource-icon.type-whiteboard { color: #7c61da; }
 .resource-icon.type-spreadsheet { color: #2a9f72; }
 .resource-icon.type-database { color: #d46b08; }
-.document-title { display: flex; min-width: 0; }
-.document-title strong { overflow: hidden; color: #262626; font-size: 14px; font-weight: 400; line-height: 22px; text-overflow: ellipsis; white-space: nowrap; }
+.document-title { display: flex; min-width: 0; flex: 1; align-items: center; gap: 9px; }
+.document-title strong { min-width: 0; flex: 1; overflow: hidden; color: #262626; font-size: 14px; font-weight: 400; line-height: 22px; text-overflow: ellipsis; white-space: nowrap; }
+.document-collaborators { display: inline-flex; flex: 0 0 auto; align-items: center; padding-left: 4px; }
+.collaborator-avatar { border: 2px solid #fafafa; color: #646a73; font-size: 10px; font-weight: 600; }
+.collaborator-avatar + .collaborator-avatar, .collaborator-overflow { margin-left: -6px; }
+.collaborator-overflow { display: grid; width: 22px; height: 22px; place-items: center; border: 2px solid #fafafa; border-radius: 50%; color: #646a73; background: #eef0f3; font-size: 9px; font-weight: 600; }
 .document-owner { overflow: hidden; color: #8a8f8d; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .document-owner a { color: inherit; text-decoration: none; }
 .document-owner a:hover { color: #595959; text-decoration: underline; text-underline-offset: 2px; }
 .document-time time { color: #8a8f8d; font-size: 14px; white-space: nowrap; }
 .document-actions { text-align: center; }
-.more-button { display: inline-grid; width: 32px; height: 32px; place-items: center; border: 0; border-radius: 6px; color: #8a8f8d; background: transparent; cursor: pointer; opacity: 0; }
-.document-row:hover .more-button, .more-button:focus-visible, .more-button[aria-expanded="true"] { opacity: 1; }
+.more-button { display: inline-grid; width: 32px; height: 32px; place-items: center; border: 0; border-radius: 6px; color: #8a8f8d; background: transparent; cursor: pointer; opacity: 1; }
 .more-button:hover { color: #262626; background: rgba(0, 0, 0, .04); }
 .skeleton { display: block; height: 12px; border-radius: 6px; background: linear-gradient(90deg, #f2f3f2 25%, #fafafa 37%, #f2f3f2 63%); background-size: 400% 100%; animation: shimmer 1.4s ease infinite; }
 .title-skeleton { width: min(240px, 75%); }
@@ -422,7 +459,8 @@ h1 { height: 28px; margin: 0 0 22px; font-size: 18px; font-weight: 500; line-hei
 .load-more-sentinel button { height: 28px; margin-top: 7px; padding: 0 9px; border: 0; border-radius: 5px; color: #8a8f8d; background: transparent; font: inherit; font-size: 13px; cursor: pointer; }
 .load-more-sentinel button:hover { color: #595959; background: rgba(0, 0, 0, .035); }
 @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
-@media (max-width: 820px) { .workbench-page { padding: 22px 24px 48px; } .documents-toolbar { align-items: flex-start; flex-direction: column; } .document-filters { align-self: flex-end; } .document-owner { display: none; } .document-list col:nth-child(1) { width: 77% !important; } .document-list col:nth-child(2) { width: 0 !important; } .document-list col:nth-child(3) { width: 18% !important; } .document-list col:nth-child(4) { width: 5% !important; } .more-button { opacity: 1; } }
+@media (hover: hover) and (pointer: fine) { .more-button { opacity: 0; } .document-row:hover .more-button, .more-button:focus-visible, .more-button[aria-expanded="true"] { opacity: 1; } }
+@media (max-width: 820px) { .workbench-page { padding: 22px 24px 48px; } .documents-toolbar { align-items: flex-start; flex-direction: column; } .document-filters { align-self: flex-end; } .document-owner { display: none; } .document-list col:nth-child(1) { width: 77% !important; } .document-list col:nth-child(2) { width: 0 !important; } .document-list col:nth-child(3) { width: 18% !important; } .document-list col:nth-child(4) { width: 5% !important; } }
 @media (max-width: 560px) { .workbench-page { padding: 20px 16px 40px; } .quick-actions { gap: 8px; } .quick-action { width: 100%; height: 55px; flex-basis: 100%; } .document-tabs { width: 100%; height: auto; overflow-x: auto; } .document-tabs button { flex: 1 0 auto; padding-inline: 12px; } .document-filters { width: 100%; justify-content: flex-end; } .document-time { display: none; } .document-list col:nth-child(1) { width: 92% !important; } .document-list col:nth-child(3) { width: 0 !important; } .document-list col:nth-child(4) { width: 8% !important; } }
 @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
 </style>

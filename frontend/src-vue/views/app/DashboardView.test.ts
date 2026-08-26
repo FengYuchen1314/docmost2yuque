@@ -26,6 +26,14 @@ beforeEach(() => {
     unobserve() {}
     disconnect() {}
   })
+  vi.stubGlobal('visualViewport', {
+    width: 1280,
+    height: 720,
+    offsetLeft: 0,
+    offsetTop: 0,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  })
   vi.stubGlobal('IntersectionObserver', class {
     constructor(callback: IntersectionObserverCallback) { intersectionCallback = callback }
     observe() {}
@@ -61,14 +69,15 @@ describe('DashboardView Yuque workbench', () => {
       '文档、表格、画板、数据表', '使用知识库整理知识', '从模板中获取灵感', 'AI 助手帮你一键生成文档',
     ])
     expect(wrapper!.findAll('[role="tab"]').map((item) => item.text())).toEqual([
-      '编辑过', '浏览过', '我点赞的', '我评论过',
+      '编辑过', '浏览过', '我收藏的', '我评论过',
     ])
     expect(wrapper!.findAll('.filter-button').map((item) => item.text())).toEqual(['类型', '归属', '创建者'])
     expect(wrapper!.text()).not.toContain('快速记录')
     expect(wrapper!.text()).not.toContain('待处理消息')
     expect(wrapper!.text()).not.toContain('我的空间')
     expect(wrapper!.text()).toContain('EDITED-first')
-    expect(wrapper!.text()).toContain('测试用户 / 测试知识库')
+    expect(wrapper!.text()).toContain('Yuchen / 测试知识库')
+    expect(wrapper!.get('.document-collaborators').attributes('aria-label')).toBe('协作者：协作者')
     expect(wrapper!.find('table.document-list').exists()).toBe(true)
     expect(wrapper!.findAll('table.document-list tbody tr')).toHaveLength(1)
     expect(wrapper!.findAll('table.document-list tbody tr td')).toHaveLength(4)
@@ -126,6 +135,64 @@ describe('DashboardView Yuque workbench', () => {
     await flushPromises()
     expect(wrapper!.text()).toContain('second')
   })
+
+  it('maps every workspace as a real owner and filters by workspace id', async () => {
+    const first = workbenchItem('personal-document', 'workspace', '个人知识库')
+    const second = workbenchItem('organization-document', 'workspace-two', '组织知识库')
+    vi.mocked(post).mockResolvedValue({ items: [first, second], nextOffset: 2, hasMore: false })
+    await mountDashboard()
+    useSessionStore().workspaces.push({
+      id: 'workspace-two', workspaceType: 'ORGANIZATION', name: '组织空间', defaultVisibility: 'WORKSPACE', defaultPublishMode: 'MANUAL', membershipRole: 'MEMBER',
+    })
+    await flushPromises()
+
+    expect(wrapper!.text()).toContain('Yuchen / 个人知识库')
+    expect(wrapper!.text()).toContain('组织空间 / 组织知识库')
+    expect(wrapper!.get('a[href="/app/w/workspace-two"]').text()).toBe('组织空间')
+
+    await wrapper!.findAll('.filter-button')[1]!.trigger('click')
+    await flushPromises()
+    const organizationOption = [...document.body.querySelectorAll<HTMLElement>('.v-list-item')]
+      .find((item) => item.textContent?.includes('组织空间'))
+    expect(organizationOption).toBeTruthy()
+    organizationOption!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+
+    expect(wrapper!.text()).not.toContain('personal-document')
+    expect(wrapper!.text()).toContain('organization-document')
+  })
+
+  it('opens the existing AI writing flow without opening the blank-document dialog', async () => {
+    vi.mocked(post).mockResolvedValue(workbenchPage('first', 1, false))
+    const { router } = await mountDashboard()
+
+    expect(wrapper!.get('[data-testid="ai-write"]').attributes('href')).toBe('/app/ai')
+    await wrapper!.get('[data-testid="ai-write"]').trigger('click')
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/app/ai'))
+
+    expect(useUiStore().createOpen).toBe(false)
+  })
+
+  it('uses collection wording and star icons for favorite actions', async () => {
+    vi.mocked(post).mockImplementation(async (path) => {
+      if (path === '/api/v1/workbench/page') return workbenchPage('favorite-target', 1, false)
+      if (path === '/api/v1/favorites/set') return {}
+      throw new Error(`Unexpected POST ${path}`)
+    })
+    await mountDashboard()
+
+    await wrapper!.get('.more-button').trigger('click')
+    await flushPromises()
+    const favoriteOption = [...document.body.querySelectorAll<HTMLElement>('.v-list-item')]
+      .find((item) => item.textContent?.trim() === '收藏')
+    expect(favoriteOption).toBeTruthy()
+    expect(favoriteOption!.querySelector('.mdi-star-outline')).toBeTruthy()
+    expect(document.body.textContent).not.toContain('点赞')
+
+    favoriteOption!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    expect(vi.mocked(post)).toHaveBeenCalledWith('/api/v1/favorites/set', { pageId: 'favorite-target', favorite: true })
+  })
 })
 
 async function mountDashboard(flush = true) {
@@ -157,12 +224,17 @@ async function mountDashboard(flush = true) {
 
 function workbenchPage(id: string, nextOffset: number, hasMore: boolean): WorkbenchPage {
   return {
-    items: [{
-      resourceId: id, resourceType: 'PAGE', workspaceId: 'workspace', knowledgeBaseId: 'kb', knowledgeBaseName: '测试知识库',
-      title: id, path: id, contentType: 'DOCUMENT', publicationStatus: 'UNPUBLISHED', reason: 'EDITED',
-      activityAt: '2026-08-26T00:00:00Z', favorite: false, collaborators: [],
-    }],
+    items: [workbenchItem(id, 'workspace', '测试知识库')],
     nextOffset,
     hasMore,
+  }
+}
+
+function workbenchItem(id: string, workspaceId: string, knowledgeBaseName: string): WorkbenchPage['items'][number] {
+  return {
+    resourceId: id, resourceType: 'PAGE', workspaceId, knowledgeBaseId: `kb-${workspaceId}`, knowledgeBaseName,
+    title: id, path: id, contentType: 'DOCUMENT', publicationStatus: 'UNPUBLISHED', reason: 'EDITED',
+    activityAt: '2026-08-26T00:00:00Z', favorite: false,
+    collaborators: [{ userId: 'collaborator', displayName: '协作者', email: 'collaborator@example.com' }],
   }
 }

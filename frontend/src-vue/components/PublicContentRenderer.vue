@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { Page } from '../../src/types'
 import ContentCardRenderer from './content-cards/ContentCardRenderer.vue'
 import { normalizeContentCard } from './content-cards/contentCardModel'
+import { copyText } from './page-management/utils'
 import {
   activeDatabaseView,
   databaseDisplayValue,
@@ -29,6 +30,37 @@ const props = defineProps<{
   content: unknown
   plainText: string
 }>()
+
+const collapsedCodeKeys = ref<string[]>([])
+const copiedCodeKey = ref('')
+const codeCopyError = ref('')
+let copyFeedbackTimer = 0
+
+onBeforeUnmount(() => window.clearTimeout(copyFeedbackTimer))
+
+function toggleCode(key: string) {
+  collapsedCodeKeys.value = collapsedCodeKeys.value.includes(key)
+    ? collapsedCodeKeys.value.filter((value) => value !== key)
+    : [...collapsedCodeKeys.value, key]
+}
+
+async function copyCode(key: string, value: string) {
+  codeCopyError.value = ''
+  try {
+    await copyText(value)
+    copiedCodeKey.value = key
+  } catch {
+    copiedCodeKey.value = ''
+    codeCopyError.value = '复制失败，请手动选择代码'
+  }
+  window.clearTimeout(copyFeedbackTimer)
+  copyFeedbackTimer = window.setTimeout(() => {
+    copiedCodeKey.value = ''
+    codeCopyError.value = ''
+  }, 1800)
+}
+
+function codeLines(value: string) { return value.split('\n') }
 
 const publicBoard = computed(() => normalizeBoard(props.content))
 const publicWorkbook = computed(() => normalizeWorkbook(props.content))
@@ -333,7 +365,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
           :class="`reader-heading--${item.level}`"
         >{{ item.text }}</component>
         <blockquote v-else-if="item.kind === 'quote'" class="public-quote">{{ item.text }}</blockquote>
-        <pre v-else-if="item.kind === 'code'" class="public-code"><span v-if="item.language" class="public-code__language">{{ item.language }}</span><code>{{ item.text }}</code></pre>
+        <section v-else-if="item.kind === 'code'" class="public-code" :class="{ collapsed: collapsedCodeKeys.includes(item.key) }">
+          <header class="public-code__header">
+            <button type="button" class="public-code__collapse" :aria-expanded="String(!collapsedCodeKeys.includes(item.key))" :aria-label="collapsedCodeKeys.includes(item.key)?'展开代码块':'收起代码块'" @click="toggleCode(item.key)"><v-icon :icon="collapsedCodeKeys.includes(item.key)?'mdi-menu-right':'mdi-menu-down'" size="15" /></button>
+            <span class="public-code__language">{{ item.language || 'Plain Text' }}</span>
+            <button type="button" class="public-code__copy" :aria-label="copiedCodeKey===item.key?'代码已复制':'复制代码'" @click="copyCode(item.key,item.text)"><v-icon :icon="copiedCodeKey===item.key?'mdi-check':'mdi-content-copy'" size="14" />{{copiedCodeKey===item.key?'已复制':'复制代码'}}</button>
+          </header>
+          <ol v-if="!collapsedCodeKeys.includes(item.key)" class="public-code__body" aria-label="代码内容"><li v-for="(line,index) in codeLines(item.text)" :key="index"><code>{{line||' '}}</code></li></ol>
+        </section>
         <ul v-else-if="item.kind === 'unordered-list'" class="public-list"><li v-for="(entry, index) in item.items" :key="index">{{ entry.text }}</li></ul>
         <ol v-else-if="item.kind === 'ordered-list'" class="public-list"><li v-for="(entry, index) in item.items" :key="index">{{ entry.text }}</li></ol>
         <ul v-else-if="item.kind === 'task-list'" class="public-list public-task-list">
@@ -344,6 +383,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
         <p v-else-if="item.kind === 'paragraph'" class="reader-paragraph">{{ item.text }}</p>
         <div v-else class="reader-blank" aria-hidden="true" />
       </template>
+      <span v-if="codeCopyError" class="reader-sr-only" role="status" aria-live="polite">{{ codeCopyError }}</span>
     </template>
 
     <div v-else-if="contentType === 'WHITEBOARD'" class="public-board" data-testid="public-whiteboard">
@@ -419,8 +459,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 .reader-paragraph { margin: 0 0 1.2em; white-space: pre-wrap; overflow-wrap: anywhere; }
 .reader-blank { height: .85em; }
 .public-quote { margin: 20px 0; border-left: 4px solid #2563eb; border-radius: 0 12px 12px 0; padding: 14px 20px; background: #eff6ff; white-space: pre-wrap; overflow-wrap: anywhere; }
-.public-code { position: relative; max-width: 100%; margin: 20px 0; overflow: auto; border-radius: 12px; padding: 20px; background: #111827; color: #e5e7eb; font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre; }
-.public-code__language { display: block; margin: -8px 0 8px; color: #93c5fd; font-size: 11px; font-weight: 700; }
+.public-code { position: relative; max-width: 100%; margin: 12px 0; overflow: hidden; border: 1px solid #e7e9e8; border-radius: 3px; color: #424745; background: #fff; font: 12px/1.75 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.public-code__header { display: flex; height: 38px; align-items: center; gap: 7px; border-bottom: 1px solid #eceeed; padding: 0 10px 0 7px; color: #a0a4a2; background: #f7f8f7; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; }
+.public-code.collapsed .public-code__header { border-bottom: 0; }
+.public-code__collapse,.public-code__copy { display: inline-flex; height: 27px; align-items: center; border: 0; border-radius: 4px; color: inherit; background: transparent; font: inherit; cursor: pointer; }
+.public-code__collapse { width: 27px; justify-content: center; padding: 0; }
+.public-code__collapse:hover,.public-code__copy:hover { color: #454a48; background: #eceeed; }
+.public-code__language { margin-left: auto; color: #b0b4b2; font-size: 12px; }
+.public-code__copy { gap: 5px; padding: 0 6px; color: #737876; font-size: 12px; }
+.public-code__body { max-width: 100%; margin: 0; overflow-x: auto; padding: 10px 18px 10px 47px; list-style-position: outside; background: #fff; }
+.public-code__body li { min-height: 21px; padding-left: 8px; color: #a5aaa7; white-space: pre; }
+.public-code__body code { color: #3f4442; font: inherit; }
+.reader-sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 .public-list { margin: 0 0 1.15em; padding-left: 1.5em; }
 .public-list li { margin: .22em 0; overflow-wrap: anywhere; }
 .public-task-list { padding-left: 0; list-style: none; }

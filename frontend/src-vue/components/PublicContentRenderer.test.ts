@@ -1,6 +1,6 @@
 import { defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createContentCardNode, encodeContentCardToken } from './content-cards/contentCardModel'
 
 vi.mock('./content-cards/ContentCardRenderer.vue', () => ({
@@ -17,8 +17,13 @@ vi.mock('./content-cards/ContentCardRenderer.vue', () => ({
 
 import PublicContentRenderer from './PublicContentRenderer.vue'
 
+afterEach(() => vi.unstubAllGlobals())
+
 function mountDocument(plainText: string, content: unknown = {}) {
-  return mount(PublicContentRenderer, { props: { contentType: 'DOCUMENT', content, plainText } })
+  return mount(PublicContentRenderer, {
+    props: { contentType: 'DOCUMENT', content, plainText },
+    global: { stubs: { VIcon: true } },
+  })
 }
 
 function mountStructured(contentType: 'WHITEBOARD' | 'SPREADSHEET' | 'DATABASE', content: unknown) {
@@ -68,11 +73,28 @@ describe('PublicContentRenderer content cards', () => {
     ].join('\n'))
     expect(wrapper.get('h1').text()).toBe('标题')
     expect(wrapper.get('blockquote').text()).toBe('引用')
-    expect(wrapper.get('pre code').text()).toContain('<img src=x onerror=alert(1)>')
+    expect(wrapper.get('.public-code code').text()).toContain('<img src=x onerror=alert(1)>')
     expect(wrapper.find('img').exists()).toBe(false)
     expect(wrapper.find('script').exists()).toBe(false)
     expect(wrapper.text()).toContain('<script>alert(1)</script>')
     expect(wrapper.find('.public-task--done').exists()).toBe(true)
+    expect(wrapper.find('.public-database').exists()).toBe(false)
+  })
+
+  it('copies and collapses Yuque-style code blocks without interpreting their contents', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    const wrapper = mountDocument(['```js', 'const value = "<unsafe>"', 'return value', '```'].join('\n'))
+
+    expect(wrapper.findAll('.public-code__body li')).toHaveLength(2)
+    expect(wrapper.get('.public-code__language').text()).toBe('js')
+    await wrapper.get('button[aria-label="复制代码"]').trigger('click')
+    expect(writeText).toHaveBeenCalledWith('const value = "<unsafe>"\nreturn value')
+    expect(wrapper.get('.public-code__copy').text()).toContain('已复制')
+
+    await wrapper.get('button[aria-label="收起代码块"]').trigger('click')
+    expect(wrapper.find('.public-code__body').exists()).toBe(false)
+    expect(wrapper.get('button[aria-label="展开代码块"]').attributes('aria-expanded')).toBe('false')
   })
 })
 
