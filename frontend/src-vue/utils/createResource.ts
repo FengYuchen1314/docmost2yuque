@@ -16,8 +16,12 @@ const DEFAULT_PAGE_TITLES: Record<Exclude<ResourceKind, 'KNOWLEDGE_BASE' | 'WORK
   DATABASE: '无标题数据表',
 }
 
-export function resetCreateResourceDraft(draft: CreateResourceDraft, knowledgeBaseId = '') {
-  draft.kind = DEFAULT_RESOURCE_KIND
+export function resetCreateResourceDraft(
+  draft: CreateResourceDraft,
+  knowledgeBaseId = '',
+  kind: ResourceKind = DEFAULT_RESOURCE_KIND,
+) {
+  draft.kind = kind
   draft.title = ''
   draft.slug = ''
   draft.knowledgeBaseId = knowledgeBaseId

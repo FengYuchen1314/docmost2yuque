@@ -17,7 +17,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/app', component: () => import('../layouts/AppLayout.vue'),
     children: [
-      { path: '', component: () => import('../views/app/DashboardView.vue') },
+      { path: '', component: () => import('../views/app/DashboardView.vue'), meta: { title: '工作台', shell: 'default', navigationKey: 'workbench' } },
       { path: 'notes', component: () => import('../views/app/QuickNotesView.vue'), meta: { title: '小记' } },
       { path: 'capture', component: () => import('../views/app/CaptureView.vue'), meta: { title: '收集内容' } },
       { path: 'notifications', component: () => import('../views/app/NotificationsView.vue'), meta: { title: '消息中心' } },
@@ -35,7 +35,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'pages/:pageId', component: () => import('../views/app/PageRedirectView.vue'), meta: { title: '文档' } },
       { path: 'kb/:knowledgeBaseId', component: () => import('../views/app/KnowledgeBaseView.vue'), meta: { title: '知识库' } },
       { path: 'kb/:knowledgeBaseId/settings', component: () => import('../views/app/KnowledgeBaseSettingsView.vue'), meta: { title: '知识库设置' } },
-      { path: 'kb/:knowledgeBaseId/pages/:pageId', component: () => import('../views/app/PageEditorView.vue'), meta: { title: '编辑器' } },
+      { path: 'kb/:knowledgeBaseId/pages/:pageId', component: () => import('../views/app/PageEditorView.vue'), meta: { title: '编辑器', shell: 'focus' } },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/' },

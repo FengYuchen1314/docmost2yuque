@@ -26,3 +26,8 @@ body { margin: 0; background: #f6f7fb; }
 .auth-form h2 { font-size: 30px; letter-spacing: -.035em; margin: 0 0 8px; }
 .auth-form > p { color: #64748b; margin: 0 0 28px; }
 @media (max-width: 900px) { .auth-canvas { grid-template-columns: 1fr; } .auth-visual { display: none; } .page-shell { padding: 20px 16px 40px; } }
+@media (max-width: 700px) {
+  .page-heading { flex-direction: column; align-items: stretch; gap: 16px; }
+  .page-heading > :last-child { flex-wrap: wrap; }
+  .surface-grid { grid-template-columns: minmax(0, 1fr); }
+}

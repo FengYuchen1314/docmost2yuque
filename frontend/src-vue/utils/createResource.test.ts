@@ -20,6 +20,19 @@ describe('create resource draft', () => {
     expect(draft).toEqual({ kind: 'DOCUMENT', title: '', slug: '', knowledgeBaseId: 'first-kb' })
   })
 
+  it('can reset into the resource type and destination requested by an entry point', () => {
+    const draft: CreateResourceDraft = {
+      kind: 'DOCUMENT',
+      title: '旧标题',
+      slug: 'old-path',
+      knowledgeBaseId: 'old-kb',
+    }
+
+    resetCreateResourceDraft(draft, 'route-kb', 'SPREADSHEET')
+
+    expect(draft).toEqual({ kind: 'SPREADSHEET', title: '', slug: '', knowledgeBaseId: 'route-kb' })
+  })
+
   it('allows untitled pages and supplies the matching default title', () => {
     const draft: CreateResourceDraft = { kind: 'WHITEBOARD', title: '   ', slug: '', knowledgeBaseId: 'kb-1' }
 
