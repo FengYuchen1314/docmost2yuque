@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import type { CatalogNode, CatalogTree, Comment, KnowledgeBase, Page } from '../../../src/types'
 import DocumentEditor from '../../components/editors/DocumentEditor.vue'
+import type { DocumentContentCardKind } from '../../components/editors/documentEditorCommands'
 import StructuredEditor from '../../components/editors/StructuredEditor.vue'
 import AnalyticsDialog from '../../components/AnalyticsDialog.vue'
 import { ContentCardPalette } from '../../components/content-cards'
@@ -28,6 +29,16 @@ interface EditorTextSelection extends DocumentSelectionContext { pageId:string; 
 interface TextRangeAnchor { type:'TEXT_RANGE'; start:number; end:number; quote:string; draftRevision:number }
 type CommentAnchor = { type:'PAGE' } | TextRangeAnchor
 interface CommentComposerContext { pageId:string; workspaceId:string; source:string|null; anchor:CommentAnchor }
+interface DocumentEditorHandle {
+  focus:()=>void
+  insertText:(text:string,replaceSlash?:boolean)=>boolean
+  insertPendingText:(text:string)=>boolean
+  cancelPendingInsert:(restore?:boolean)=>void
+  capturePendingInsert:()=>boolean
+  requestContentCard:(kind?:DocumentContentCardKind|null)=>void
+  requestReference:()=>void
+  closeOutline:()=>void
+}
 const route=useRoute();const router=useRouter();const session=useSessionStore();const ui=useUiStore()
 const collaboration=usePageCollaboration()
 const pageId=computed(()=>String(route.params.pageId));const page=ref<Page|null>(null)
@@ -41,17 +52,34 @@ const catalogSearchInput=ref<HTMLInputElement|null>(null)
 const sidePanelCloseButton=ref<unknown>(null)
 const knowledgeBaseQuery=ref('');const knowledgeBaseTab=ref<'personal'|'collaborative'>('personal');const knowledgeBaseMenuOpen=ref(false)
 const contentCardOpen=ref(false)
+const contentCardKinds=ref<DocumentContentCardKind[]>([])
+const contentCardPending=ref(false)
+const referenceInsertMode=ref(false)
+const referencePending=ref(false)
 const favoriteActive=ref(false);const favoritePending=ref(false)
 const documentProtected=ref(false);const collaborationEnabledForPage=ref(true);const savedDocumentSource=ref('');const savedDocumentContent=ref<unknown>(null)
-const documentEditor=ref<{focus:()=>void;insertText:(text:string,replaceSlash?:boolean)=>void;closeOutline:()=>void}|null>(null)
+const documentEditor=ref<DocumentEditorHandle|null>(null)
 let saveTimer=0;let hydrated=false;let saveInFlight:Promise<void>|null=null;let saveRequested=false;let changeVersion=0;let savedVersion=0;let loadSequence=0;let commentSequence=0;let commentSubmitSequence=0;let favoriteSequence=0
 let compactMediaQuery:MediaQueryList|null=null
 let catalogReturnFocus:HTMLElement|null=null
 let sidePanelReturnFocus:HTMLElement|null=null
-const statusLabel=computed(()=>({saved:'已加载最新版本',dirty:'等待保存',saving:'保存中…',offline:'离线，等待同步',conflict:'版本冲突'}[status.value]))
-const collaborationLabel=computed(()=>!collaborationEnabledForPage.value?'结构保护中':collaboration.peers.value.length
-  ? `${collaboration.peers.value.length + 1} 人`
-  : ({idle:'未连接',connecting:'连接中',syncing:'同步中',connected:'在线',reconnecting:'重连中',unavailable:'协作不可用'}[collaboration.status.value]))
+const statusPresentation=computed(()=>({
+  saved:{label:'已保存',icon:'mdi-check-circle-outline'},
+  dirty:{label:'未保存',icon:'mdi-circle-medium'},
+  saving:{label:'保存中…',icon:'mdi-loading'},
+  offline:{label:'已离线保存，待同步',icon:'mdi-cloud-off-outline'},
+  conflict:{label:'保存冲突',icon:'mdi-alert-circle-outline'},
+}[status.value]))
+const statusLabel=computed(()=>statusPresentation.value.label)
+const collaborationLabel=computed(()=>{
+  if(!collaborationEnabledForPage.value)return'结构保护中'
+  if(collaboration.status.value==='unavailable')return'协作不可用'
+  if(collaboration.status.value==='connected')return collaboration.peers.value.length?`${collaboration.peers.value.length + 1} 人协作`:'已连接'
+  return'连接中'
+})
+const collaborationTone=computed(()=>!collaborationEnabledForPage.value||collaboration.status.value==='unavailable'
+  ? 'unavailable'
+  : collaboration.status.value==='connected'?'connected':'connecting')
 const publicationLabel=computed(()=>!publication.value?.published?'发布':publication.value.changedSincePublication?'更新':'已发布')
 const wordCount=computed(()=>body.value.replace(/\s/g,'').length)
 const composerQuote=computed(()=>textRangeQuote(commentComposerContext.value?.anchor))
@@ -122,9 +150,14 @@ function restoreFocus(target:HTMLElement|null,fallbackSelector=''){
   })
 }
 function hideSidePanel(restore=true){
+  const closingPanel=sidePanel.value
+  const closingReferencePending=closingPanel==='references'&&referencePending.value
   sidePanel.value=null;commentLaunchContext.value=null;resetCommentComposer()
+  referenceInsertMode.value=false
+  referencePending.value=false
   const target=sidePanelReturnFocus
   sidePanelReturnFocus=null
+  if(closingReferencePending)documentEditor.value?.cancelPendingInsert(restore&&!target)
   if(restore)restoreFocus(target)
 }
 function closeSidePanel(){hideSidePanel(true)}
@@ -148,7 +181,7 @@ watch(body,handleBodyChange)
 watch([title,body],()=>{if(!hydrated)return;changeVersion+=1;if(collaborationEnabledForPage.value&&body.value!==collaboration.body.value)collaboration.setBody(body.value);status.value='dirty';window.clearTimeout(saveTimer);saveTimer=window.setTimeout(()=>{void save()},1500)})
 onBeforeRouteUpdate(protectDirtyNavigation)
 onBeforeRouteLeave(protectDirtyNavigation)
-onBeforeUnmount(()=>{window.clearTimeout(saveTimer);compactMediaQuery?.removeEventListener('change',handleCompactViewportChange);window.removeEventListener('online',flushOffline);window.removeEventListener('keydown',editorShortcut);window.removeEventListener('beforeunload',protectUnsavedExit);document.removeEventListener('visibilitychange',saveWhenHidden)})
+onBeforeUnmount(()=>{documentEditor.value?.cancelPendingInsert(false);window.clearTimeout(saveTimer);compactMediaQuery?.removeEventListener('change',handleCompactViewportChange);window.removeEventListener('online',flushOffline);window.removeEventListener('keydown',editorShortcut);window.removeEventListener('beforeunload',protectUnsavedExit);document.removeEventListener('visibilitychange',saveWhenHidden)})
 async function load(){
   const sequence=++loadSequence
   const requestedPageId=pageId.value
@@ -196,6 +229,9 @@ async function load(){
 function resetPageStateForLoad(preserveCatalog=false){
   window.clearTimeout(saveTimer)
   saveTimer=0
+  documentEditor.value?.cancelPendingInsert(false)
+  catalogReturnFocus=null
+  sidePanelReturnFocus=null
   loading.value=true
   hydrated=false
   operationErrors.load=''
@@ -224,6 +260,10 @@ function resetPageStateForLoad(preserveCatalog=false){
   managementOpen.value=false
   analyticsOpen.value=false
   contentCardOpen.value=false
+  contentCardKinds.value=[]
+  contentCardPending.value=false
+  referenceInsertMode.value=false
+  referencePending.value=false
   knowledgeBaseMenuOpen.value=false
   outlinePanelOpen.value=false
   documentProtected.value=false
@@ -408,6 +448,7 @@ function editorShortcut(event:KeyboardEvent){
 async function openComments(){
   const selectionContext=commentLaunchContext.value??selectionCommentContext()
   commentLaunchContext.value=null
+  if(sidePanel.value==='references')hideSidePanel(false)
   if(compactViewport.value){sidePanelReturnFocus=activeFocusTarget();hideCatalog(false)}
   sidePanel.value='comments'
   resetCommentComposer()
@@ -415,7 +456,13 @@ async function openComments(){
   if(compactViewport.value)focusAfterRender(()=>sidePanelCloseButton.value)
   await loadComments()
 }
-function openReferences(){if(compactViewport.value){sidePanelReturnFocus=activeFocusTarget();hideCatalog(false)}sidePanel.value='references';if(compactViewport.value)focusAfterRender(()=>sidePanelCloseButton.value)}
+function showReferences(insertMode:boolean,hasPending:boolean){if(sidePanel.value==='comments')hideSidePanel(false);referenceInsertMode.value=insertMode;referencePending.value=hasPending;if(compactViewport.value){sidePanelReturnFocus=activeFocusTarget();hideCatalog(false)}sidePanel.value='references';if(compactViewport.value)focusAfterRender(()=>sidePanelCloseButton.value)}
+function handleReferenceInsertRequest(payload:{commandId:string|null}){contentCardOpen.value=false;contentCardKinds.value=[];contentCardPending.value=false;showReferences(Boolean(payload.commandId),true)}
+function openReferenceBrowser(){if(contentCardPending.value||contentCardOpen.value)documentEditor.value?.cancelPendingInsert(false);contentCardOpen.value=false;contentCardKinds.value=[];contentCardPending.value=false;if(sidePanel.value==='references'&&referencePending.value)documentEditor.value?.cancelPendingInsert(false);const canCapture=page.value?.contentType==='DOCUMENT'&&!documentProtected.value;showReferences(false,Boolean(canCapture&&documentEditor.value?.capturePendingInsert()))}
+function requestReferenceInsert(){if(page.value?.contentType==='DOCUMENT'&&!documentProtected.value)documentEditor.value?.requestReference();else openReferenceBrowser()}
+function requestContentCard(payload?:{commandId:string|null;kind:DocumentContentCardKind|null}){if(sidePanel.value==='comments')hideSidePanel(false);else if(sidePanel.value==='references'){sidePanel.value=null;referenceInsertMode.value=false;referencePending.value=false;sidePanelReturnFocus=null}contentCardPending.value=true;contentCardKinds.value=payload?.kind?[payload.kind]:[];contentCardOpen.value=true}
+function cancelContentCardInsert(){const pending=contentCardPending.value;contentCardPending.value=false;contentCardKinds.value=[];if(pending)documentEditor.value?.cancelPendingInsert(true)}
+function handleReferencePageOpen(){hideSidePanel(false)}
 async function openManagement(tab:PageManagementTab){if(!page.value)return;if(!navigator.onLine){ui.notify('离线时不能打开管理功能，请联网后重试','warning');return}window.clearTimeout(saveTimer);if(status.value==='dirty'||status.value==='saving')await save();if(status.value!=='saved'){ui.notify('请先解决保存或版本冲突','warning');return}managementTab.value=tab;managementOpen.value=true}
 function managementUpdated(updated:Page,resetEditorBody=false){
   const currentPageId=page.value?.id
@@ -429,8 +476,20 @@ function managementUpdated(updated:Page,resetEditorBody=false){
   queueMicrotask(()=>{hydrated=resume})
 }
 async function managementDeleted(){if(page.value)await router.replace(`/app/kb/${page.value.knowledgeBaseId}`)}
-function insertReference(value:{token:string}){if(documentProtected.value){ui.notify('此文稿包含暂不支持的结构，当前已启用只读保护','warning');return}documentEditor.value?.insertText(value.token);sidePanel.value=null;ui.notify('引用已插入')}
-function insertContentCard(value:ContentCardCreateEvent){if(documentProtected.value){ui.notify('此文稿包含暂不支持的结构，当前已启用只读保护','warning');return}documentEditor.value?.insertText(value.token);ui.notify('内容卡片已插入')}
+function insertReference(value:{token:string}){
+  if(!referencePending.value){ui.notify('请重新选择插入位置','warning');return}
+  referencePending.value=false
+  if(documentProtected.value){documentEditor.value?.cancelPendingInsert(false);sidePanel.value=null;referenceInsertMode.value=false;sidePanelReturnFocus=null;ui.notify('此文稿包含暂不支持的结构，当前已启用只读保护','warning');return}
+  if(!documentEditor.value?.insertPendingText(value.token)){documentEditor.value?.cancelPendingInsert(false);sidePanel.value=null;referenceInsertMode.value=false;sidePanelReturnFocus=null;void nextTick(()=>documentEditor.value?.focus());ui.notify('文稿已变化，请重新选择插入位置','warning');return}
+  sidePanel.value=null;referenceInsertMode.value=false;sidePanelReturnFocus=null;ui.notify('引用已插入')
+}
+function insertContentCard(value:ContentCardCreateEvent){
+  if(!contentCardPending.value)return
+  contentCardPending.value=false
+  if(documentProtected.value){documentEditor.value?.cancelPendingInsert(false);contentCardOpen.value=false;contentCardKinds.value=[];ui.notify('此文稿包含暂不支持的结构，当前已启用只读保护','warning');return}
+  if(!documentEditor.value?.insertPendingText(value.token)){documentEditor.value?.cancelPendingInsert(false);contentCardOpen.value=false;contentCardKinds.value=[];void nextTick(()=>documentEditor.value?.focus());ui.notify('文稿已变化，请重新选择插入位置','warning');return}
+  contentCardKinds.value=[];ui.notify('内容卡片已插入')
+}
 const uploadContentCard:ContentCardUploadHandler=async(file)=>{if(!page.value)throw new Error('文稿尚未加载');if(documentProtected.value)throw new Error('此文稿当前处于结构保护状态');if(file.size>50*1024*1024)throw new Error('单个文件不能超过 50 MB');const form=new FormData();form.append('pageId',page.value.id);form.append('file',file);const attachment=await upload<UploadedAttachment>('/api/v1/attachments/upload',form);return{url:attachment.contentUrl,name:attachment.originalName,size:attachment.sizeBytes,mimeType:attachment.mediaType}}
 async function loadComments(){
   const sequence=++commentSequence
@@ -565,21 +624,20 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
       <div class="editor-header-left">
         <input v-if="page?.contentType!=='DOCUMENT'" v-model="title" class="structured-title-input" placeholder="无标题" aria-label="文稿标题" />
         <span v-else class="header-document-title" :title="title">{{title||'无标题'}}</span>
-        <v-icon class="document-lock" icon="mdi-lock-outline" size="14" title="仅协作者可编辑" />
-        <div class="editor-header-status" :class="`status-${status}`" :title="statusLabel">
-          <v-icon :icon="status==='saved'?'mdi-lock-outline':status==='saving'?'mdi-loading':status==='conflict'?'mdi-alert-circle-outline':'mdi-cloud-sync-outline'" :class="{'mdi-spin':status==='saving'}" size="14" />
+        <v-icon v-if="page?.contentType==='DOCUMENT'&&documentProtected" class="document-lock" icon="mdi-shield-lock-outline" size="14" title="正文只读保护" />
+        <div class="editor-header-status" :class="`status-${status}`" :title="statusLabel" role="status" aria-live="polite" aria-atomic="true">
+          <v-icon :icon="statusPresentation.icon" :class="{'mdi-spin':status==='saving'}" size="14" />
           <span>{{statusLabel}}</span>
-          <v-icon icon="mdi-cloud-outline" size="16" />
         </div>
       </div>
 
       <div class="editor-header-actions">
         <v-btn class="header-icon d-none d-sm-inline-flex" :icon="favoriteActive?'mdi-star':'mdi-star-outline'" :loading="favoritePending" variant="text" size="small" :title="favoriteActive?'取消收藏':'收藏'" :aria-label="favoriteActive?'取消收藏':'收藏'" @click="toggleFavorite" />
-        <v-btn v-if="page?.contentType==='DOCUMENT'" class="header-icon d-none d-sm-inline-flex" icon="mdi-file-code-outline" variant="text" size="small" title="插入内容" aria-label="插入内容" :disabled="documentProtected" @click="contentCardOpen=true" />
+        <v-btn v-if="page?.contentType==='DOCUMENT'" class="header-icon d-none d-sm-inline-flex" icon="mdi-file-code-outline" variant="text" size="small" title="插入内容" aria-label="插入内容" :disabled="documentProtected" @click="documentEditor?.requestContentCard(null)" />
         <v-tooltip :text="collaboration.error.value || `实时协作：${collaborationLabel}`">
-          <template #activator="{ props: tooltipProps }"><button v-bind="tooltipProps" type="button" class="collaboration-state" :aria-label="`实时协作：${collaborationLabel}`" @click="openManagement('PERMISSIONS')"><v-icon icon="mdi-account-plus-outline" size="20" /><span class="collaboration-dot" :class="`collaboration-${collaboration.status.value}`" /></button></template>
+          <template #activator="{ props: tooltipProps }"><button v-bind="tooltipProps" type="button" class="collaboration-state" :aria-label="`实时协作：${collaborationLabel}`" @click="openManagement('PERMISSIONS')"><v-icon icon="mdi-account-plus-outline" size="20" /><span class="collaboration-label">{{collaborationLabel}}</span><span class="collaboration-dot" :class="`collaboration-${collaborationTone}`" /></button></template>
         </v-tooltip>
-        <v-btn class="header-icon d-none d-sm-inline-flex" icon="mdi-vector-link" variant="text" size="small" title="引用" aria-label="引用" @click="openReferences" />
+        <v-btn class="header-icon d-none d-sm-inline-flex" icon="mdi-vector-link" variant="text" size="small" title="引用" aria-label="引用" @click="requestReferenceInsert" />
         <v-btn class="share-button" variant="outlined" size="small" @click="openManagement('SHARE')">分享</v-btn>
         <v-btn class="publish-button" color="success" variant="flat" size="small" @click="openManagement('PUBLISH')">{{publicationLabel}}</v-btn>
         <div class="header-action-cluster">
@@ -588,8 +646,8 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
             <template #activator="{props}"><v-btn v-bind="props" class="header-icon" icon="mdi-dots-horizontal" variant="text" size="small" title="更多" aria-label="更多操作" /></template>
             <v-list class="editor-more-menu" density="compact">
               <v-list-item class="d-sm-none" :prepend-icon="favoriteActive?'mdi-star':'mdi-star-outline'" :title="favoriteActive?'取消收藏':'收藏'" :disabled="favoritePending" @click="toggleFavorite" />
-              <v-list-item v-if="page?.contentType==='DOCUMENT'" class="d-sm-none" prepend-icon="mdi-file-code-outline" title="插入内容" :disabled="documentProtected" @click="contentCardOpen=true" />
-              <v-list-item class="d-sm-none" prepend-icon="mdi-vector-link" title="页面关系" @click="openReferences" />
+              <v-list-item v-if="page?.contentType==='DOCUMENT'" class="d-sm-none" prepend-icon="mdi-file-code-outline" title="插入内容" :disabled="documentProtected" @click="documentEditor?.requestContentCard(null)" />
+              <v-list-item class="d-sm-none" prepend-icon="mdi-vector-link" title="页面关系" @click="openReferenceBrowser" />
               <v-list-item prepend-icon="mdi-tune-variant" title="文档设置" @click="openManagement('PROPERTIES')" />
               <v-list-item prepend-icon="mdi-account-lock-outline" title="协作者权限" @click="openManagement('PERMISSIONS')" />
               <v-list-item prepend-icon="mdi-history" title="版本历史" @click="openManagement('HISTORY')" />
@@ -607,7 +665,7 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
 
     <div v-if="page&&!loading" class="editor-content" :class="{ 'editor-content--structured': page.contentType !== 'DOCUMENT' }" :inert="compactViewport&&(catalogOpen||Boolean(sidePanel))||undefined">
       <div v-if="page.contentType==='DOCUMENT'&&documentProtected" class="document-protection-notice" role="status"><v-icon icon="mdi-shield-lock-outline" size="17"/><span>此文稿含有当前编辑器尚未支持的结构，正文已启用只读保护；修改标题不会覆盖原内容。</span></div>
-      <DocumentEditor v-if="page.contentType==='DOCUMENT'" ref="documentEditor" v-model="body" :title="title" :readonly="documentProtected" :title-readonly="false" :document-settings="page.documentSettings" :force-outline-closed="Boolean(sidePanel)||(compactViewport&&catalogOpen)" @update:title="title=$event" @blur="save" @selection-change="onDocumentSelection" @outline-open-change="handleOutlineOpenChange" />
+      <DocumentEditor v-if="page.contentType==='DOCUMENT'" ref="documentEditor" v-model="body" :title="title" :readonly="documentProtected" :title-readonly="false" :document-settings="page.documentSettings" :force-outline-closed="Boolean(sidePanel)||(compactViewport&&catalogOpen)" @update:title="title=$event" @blur="save" @selection-change="onDocumentSelection" @outline-open-change="handleOutlineOpenChange" @request-content-card="requestContentCard" @request-reference="handleReferenceInsertRequest" />
       <StructuredEditor v-else :type="page.contentType" v-model="body" />
     </div>
     <div v-if="page?.contentType==='DOCUMENT'&&!loading" class="editor-word-count">字数 {{wordCount}}</div>
@@ -640,11 +698,11 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
           <div class="comment-composer-actions"><button type="button" @click="cancelComment">取消</button><button type="submit" class="primary" :disabled="!commentText.trim()||commentSubmitting">{{commentSubmitting?'发表中…':'发表'}}</button></div>
         </form>
       </template>
-      <ReferencePanel v-else-if="page" :page-id="page.id" :pages="siblingPages" :allow-insert="page.contentType==='DOCUMENT'&&!documentProtected" initial-tab="OUTGOING" @insert="insertReference" @open-page="closeSidePanel"/>
+      <ReferencePanel v-else-if="page" :key="`${page.id}:${referenceInsertMode?'insert':'browse'}`" :page-id="page.id" :pages="siblingPages" :allow-insert="page.contentType==='DOCUMENT'&&!documentProtected&&referencePending" :initial-tab="referenceInsertMode?'INSERT':'OUTGOING'" @insert="insertReference" @open-page="handleReferencePageOpen"/>
     </aside>
     <PageManagementDialog v-if="page" v-model="managementOpen" :page="page" :initial-tab="managementTab" @updated="managementUpdated" @deleted="managementDeleted" @close="loadPublication"/>
     <AnalyticsDialog v-if="page" v-model="analyticsOpen" :page-id="page.id" :title="`${page.title} · 内容统计`"/>
-    <ContentCardPalette v-if="page?.contentType==='DOCUMENT'&&!documentProtected" v-model="contentCardOpen" :upload-handler="uploadContentCard" @insert="insertContentCard"/>
+    <ContentCardPalette v-if="page?.contentType==='DOCUMENT'&&!documentProtected" v-model="contentCardOpen" :allowed-kinds="contentCardKinds" :upload-handler="uploadContentCard" @insert="insertContentCard" @cancel="cancelContentCardInsert"/>
   </div>
 </template>
 
@@ -703,17 +761,18 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
 .structured-title-input { width: min(300px,24vw); height: 32px; border: 0; outline: 0; background: transparent; color: #262626; font-size: 14px; font-weight: 500; }
 .document-lock { margin-left: 7px; color: #a6aaa8; }
 .editor-header-status { display: flex; height: 28px; align-items: center; gap: 5px; margin-left: 12px; color: #8a8f8d; font-size: 12px; white-space: nowrap; }
+.editor-header-status.status-saved { color: #459b72; }
 .editor-header-status.status-dirty,
 .editor-header-status.status-saving { color: #8a8f8d; }
 .editor-header-status.status-offline { color: #d97904; }
 .editor-header-status.status-conflict { color: #d33b35; }
-.collaboration-state { position: relative; display: flex; width: 36px; height: 32px; align-items: center; justify-content: center; border: 0; border-radius: 4px; background: transparent; color: #262626; cursor: pointer; }
+.collaboration-state { position: relative; display: flex; width: auto; min-width: 36px; height: 32px; align-items: center; justify-content: center; gap: 5px; padding: 0 10px 0 8px; border: 0; border-radius: 4px; background: transparent; color: #262626; cursor: pointer; }
 .collaboration-state:hover { color: #262626; background: #f0f1f0; }
+.collaboration-label { max-width: 80px; overflow: hidden; color: #707573; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .collaboration-dot { position: absolute; right: 5px; bottom: 4px; width: 6px; height: 6px; border: 1px solid #fff; border-radius: 50%; background: #b7bbba; }
 .collaboration-dot.collaboration-connected { background: #00b96b; }
-.collaboration-dot.collaboration-connecting,
-.collaboration-dot.collaboration-syncing,
-.collaboration-dot.collaboration-reconnecting { background: #f0a020; }
+.collaboration-dot.collaboration-connecting { background: #f0a020; }
+.collaboration-dot.collaboration-unavailable { background: #b7bbba; }
 .share-button,
 .publish-button { width: 60px; height: 32px !important; min-width: 60px !important; border-radius: 5px !important; font-weight: 500; letter-spacing: 0 !important; text-transform: none !important; }
 .share-button { margin-left: 6px; border-color: #d8dad9 !important; color: #262626 !important; background: #fff !important; }
@@ -853,6 +912,21 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
 .editor-word-count { position: fixed; bottom: 5px; left: 7px; z-index: 20; color: #a6aaa8; font-size: 12px; pointer-events: none; }
 .catalog-is-open .editor-word-count { display: none; }
 
+@media (min-width: 1101px) {
+  .editor-page,
+  .editor-page.catalog-is-open { grid-template-columns: minmax(0,1fr) 31px; }
+  .editor-header,
+  .editor-content { grid-column: 1; }
+  .editor-chrome-rail { grid-column: 2; }
+  .editor-catalog {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: 259px;
+    height: auto;
+    align-self: auto;
+  }
+}
+
 @media (max-width: 1100px) {
   .editor-page,
   .editor-page.catalog-is-open { --catalog-width: 0px; grid-template-columns: 0 minmax(0,1fr); }
@@ -862,7 +936,8 @@ function documentContent(text:string){return{type:'doc',content:[{type:'paragrap
   .editor-catalog { position: fixed; top: 0; bottom: 0; left: 0; width: min(82vw,300px); box-shadow: 10px 0 34px rgba(0,0,0,.1); }
   .editor-header-status { display: none; }
   .header-document-title { max-width: 22vw; }
-  .collaboration-state span { display: none; }
+  .collaboration-state { width: 36px; padding: 0; }
+  .collaboration-state .collaboration-label { display: none; }
   .editor-progress { right: 0; }
   .editor-error { right: 24px; left: 24px; }
   .catalog-bottom-count { left: min(82vw,300px); }

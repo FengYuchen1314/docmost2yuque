@@ -1,8 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { DocumentSettings } from '../../../src/types'
+import {
+  blockCommandFor,
+  DOCUMENT_EDITOR_COMMANDS,
+  filterDocumentEditorCommands,
+  groupDocumentEditorCommands,
+  type DocumentBlockKind,
+  type DocumentContentCardKind,
+  type DocumentEditorCommand,
+} from './documentEditorCommands'
 
-type BlockKind = 'PARAGRAPH' | 'H1' | 'H2' | 'QUOTE' | 'BULLET' | 'NUMBERED' | 'TODO' | 'CODE'
+type BlockKind = DocumentBlockKind
 type CodeStyle = 'FENCED' | 'INLINE' | null
 
 interface EditorBlock {
@@ -28,6 +37,13 @@ interface SlashState {
   query: string
 }
 
+interface PendingInsert {
+  source: string
+  index: number
+  start: number
+  end: number
+}
+
 interface LinkRequest {
   index: number
   start: number
@@ -43,14 +59,6 @@ interface SelectionContext {
   blockEnd: number
   selectionStart: number
   selectionEnd: number
-}
-
-interface CommandDefinition {
-  kind: BlockKind
-  title: string
-  description: string
-  icon: string
-  keywords: string
 }
 
 type TemplateFocusable = HTMLElement | { $el?: HTMLElement } | null
@@ -77,20 +85,11 @@ const emit = defineEmits<{
   'update:title': [value: string]
   blur: []
   slash: [context: { blockIndex: number; query: string }]
+  'request-content-card': [payload: { commandId: string | null; kind: DocumentContentCardKind | null }]
+  'request-reference': [payload: { commandId: string | null }]
   'selection-change': [start: number, end: number, context: SelectionContext]
   'outline-open-change': [open: boolean]
 }>()
-
-const commands: CommandDefinition[] = [
-  { kind: 'PARAGRAPH', title: '正文', description: '普通文本段落', icon: 'mdi-format-paragraph', keywords: 'paragraph text zhengwen duanluo' },
-  { kind: 'H1', title: '标题 1', description: '页面内的主标题', icon: 'mdi-format-header-1', keywords: 'heading title h1 biaoti' },
-  { kind: 'H2', title: '标题 2', description: '页面内的二级标题', icon: 'mdi-format-header-2', keywords: 'heading title h2 biaoti' },
-  { kind: 'QUOTE', title: '引用', description: '突出显示引用内容', icon: 'mdi-format-quote-close', keywords: 'quote yinyong' },
-  { kind: 'BULLET', title: '无序列表', description: '创建项目符号列表', icon: 'mdi-format-list-bulleted', keywords: 'bullet list unordered liebiao' },
-  { kind: 'NUMBERED', title: '有序列表', description: '创建编号列表', icon: 'mdi-format-list-numbered', keywords: 'number ordered list youxu liebiao' },
-  { kind: 'TODO', title: '待办', description: '创建可勾选的任务', icon: 'mdi-checkbox-marked-outline', keywords: 'todo task checkbox daiban' },
-  { kind: 'CODE', title: '代码块', description: '保留缩进与换行', icon: 'mdi-code-braces-box', keywords: 'code daima' },
-]
 
 const source = ref(props.modelValue)
 const activeIndex = ref(0)
@@ -100,6 +99,9 @@ const draggingIndex = ref<number | null>(null)
 const dropIndex = ref<number | null>(null)
 const slashState = ref<SlashState | null>(null)
 const slashSelection = ref(0)
+const slashPlacement = ref<'above' | 'below'>('below')
+const selectionRange = ref({ index: 0, start: 0, end: 0 })
+const pendingInsert = ref<PendingInsert | null>(null)
 const compactOutline = ref(isCompactOutlineViewport())
 const outlineOpen = ref(!compactOutline.value)
 const insertMenuOpen = ref(false)
@@ -119,7 +121,6 @@ let outlineMediaQuery: MediaQueryList | null = null
 let outlineReturnFocus: HTMLElement | null = null
 
 const blocks = computed(() => parseMarkdown(source.value))
-const activeBlock = computed(() => blocks.value[clampIndex(activeIndex.value, blocks.value.length)] ?? emptyBlock())
 const targetIndices = computed(() => {
   const sourceIndices = selectedIndices.value.length ? selectedIndices.value : [clampIndex(activeIndex.value, blocks.value.length)]
   return [...new Set(sourceIndices)].filter((index) => index >= 0 && index < blocks.value.length).sort((left, right) => left - right)
@@ -137,19 +138,58 @@ const editorClasses = computed(() => [
   `document-size-${settings.value.fontSize.toLowerCase()}`,
   `document-spacing-${settings.value.paragraphSpacing.toLowerCase()}`,
 ])
-const kindItems = computed(() => commands.map(({ kind, title, icon }) => ({ value: kind, title, prependIcon: icon })))
+const selectedBlockKind = computed<BlockKind | 'MIXED'>(() => {
+  const kinds = new Set(targetIndices.value.map((index) => blocks.value[index]?.kind).filter(Boolean))
+  return kinds.size === 1 ? [...kinds][0] as BlockKind : 'MIXED'
+})
+const kindItems = computed(() => {
+  const items = DOCUMENT_EDITOR_COMMANDS.flatMap((command) => command.action === 'BLOCK'
+    ? [{ value: command.blockKind, title: command.title, prependIcon: command.icon }]
+    : [])
+  return selectedBlockKind.value === 'MIXED'
+    ? [{ value: 'MIXED', title: '多种格式', disabled: true }, ...items]
+    : items
+})
 const filteredCommands = computed(() => {
-  const query = slashState.value?.query.trim().toLocaleLowerCase() ?? ''
-  if (!query) return commands
-  return commands.filter((command) => `${command.title} ${command.description} ${command.keywords}`.toLocaleLowerCase().includes(query))
+  return filterDocumentEditorCommands(slashState.value?.query ?? '')
 })
 const filteredInsertCommands = computed(() => {
-  const query = insertQuery.value.trim().toLocaleLowerCase()
-  if (!query) return commands
-  return commands.filter((command) => `${command.title} ${command.description} ${command.keywords}`.toLocaleLowerCase().includes(query))
+  return filterDocumentEditorCommands(insertQuery.value)
 })
+const slashCommandGroups = computed(() => groupDocumentEditorCommands(filteredCommands.value))
+const insertCommandGroups = computed(() => groupDocumentEditorCommands(filteredInsertCommands.value))
+const canIndentSelection = computed(() => targetIndices.value.length > 0 && targetIndices.value.every((index) => {
+  const block = blocks.value[index]
+  return Boolean(block && isListBlock(block) && canChangeIndent(block, 1))
+}))
+const canOutdentSelection = computed(() => targetIndices.value.length > 0 && targetIndices.value.every((index) => {
+  const block = blocks.value[index]
+  return Boolean(block && isListBlock(block) && canChangeIndent(block, -1))
+}))
 const canUndo = computed(() => undoStack.value.length > 0)
 const canRedo = computed(() => redoStack.value.length > 0)
+
+function isBlockKindActive(kind: BlockKind) {
+  return targetIndices.value.length > 0 && targetIndices.value.every((index) => blocks.value[index]?.kind === kind)
+}
+
+function inlineFormatActive(marker: string) {
+  const range = selectionRange.value
+  const block = blocks.value[range.index]
+  if (!block) return false
+  const start = Math.min(range.start, range.end, block.content.length)
+  const end = Math.min(Math.max(range.start, range.end), block.content.length)
+  if (marker === '*') {
+    let leftRun = 0
+    let rightRun = 0
+    while (start - leftRun - 1 >= 0 && block.content[start - leftRun - 1] === '*') leftRun += 1
+    while (end + rightRun < block.content.length && block.content[end + rightRun] === '*') rightRun += 1
+    return leftRun % 2 === 1 && rightRun % 2 === 1
+  }
+  return start >= marker.length
+    && block.content.slice(start - marker.length, start) === marker
+    && block.content.slice(end, end + marker.length) === marker
+}
 
 watch(() => props.modelValue, (value) => {
   if (value === source.value) return
@@ -427,6 +467,7 @@ function onEditorKeydown(index: number, event: KeyboardEvent) {
   const current = blocks.value[index]
   if (!current) return
   if (props.readonly) return
+  if (event.isComposing || event.keyCode === 229) return
 
   if (slashState.value?.index === index) {
     if (event.key === 'ArrowDown') {
@@ -442,7 +483,7 @@ function onEditorKeydown(index: number, event: KeyboardEvent) {
     if (event.key === 'Enter' && filteredCommands.value.length) {
       event.preventDefault()
       const command = filteredCommands.value[slashSelection.value]
-      if (command) chooseSlashCommand(command.kind)
+      if (command) chooseSlashCommand(command)
       return
     }
     if (event.key === 'Escape') {
@@ -572,12 +613,14 @@ function addBlockAfter(index = activeIndex.value, kind: BlockKind = 'PARAGRAPH')
   commit(next, { index: target, position: 0 })
 }
 
-function chooseInsertCommand(kind: BlockKind) {
+function chooseInsertCommand(command: DocumentEditorCommand) {
   insertMenuOpen.value = false
-  addBlockAfter(activeIndex.value, kind)
+  if (command.action === 'BLOCK') addBlockAfter(activeIndex.value, command.blockKind)
+  else requestExternalCommand(command)
 }
 
 function onInsertMenuKeydown(event: KeyboardEvent) {
+  if (event.isComposing || event.keyCode === 229) return
   if (event.key === 'ArrowDown') {
     event.preventDefault()
     if (filteredInsertCommands.value.length) insertSelection.value = (insertSelection.value + 1) % filteredInsertCommands.value.length
@@ -591,7 +634,7 @@ function onInsertMenuKeydown(event: KeyboardEvent) {
   if (event.key === 'Enter') {
     event.preventDefault()
     const command = filteredInsertCommands.value[insertSelection.value]
-    if (command) chooseInsertCommand(command.kind)
+    if (command) chooseInsertCommand(command)
     return
   }
   if (event.key === 'Escape') {
@@ -646,7 +689,7 @@ function indentSelected(direction: -1 | 1, focus?: FocusRequest) {
   let changed = false
   for (const index of targetIndices.value) {
     const current = next[index]
-    if (!current) continue
+    if (!current || !isListBlock(current)) continue
     if (direction > 0 && current.indent.length < 12) {
       current.indent += '  '
       changed = true
@@ -807,21 +850,28 @@ function updateSlash(index: number, content: string, caret: number) {
   }
   const query = before.slice(slashAt + 1)
   slashState.value = { index, start: slashAt, end: caret, query }
+  slashPlacement.value = resolveSlashPlacement(editorRefs.value[index])
   slashSelection.value = 0
   emit('slash', { blockIndex: index, query })
 }
 
-function chooseSlashCommand(kind: BlockKind) {
+function chooseSlashCommand(command: DocumentEditorCommand) {
   const state = slashState.value
   const current = state ? blocks.value[state.index] : null
   if (!state || !current) return
   const withoutQuery = current.content.slice(0, state.start) + current.content.slice(state.end)
   const next = cloneBlocks()
-  next[state.index] = convertKind({ ...current, content: withoutQuery }, kind, state.index)
+  next[state.index] = command.action === 'BLOCK'
+    ? convertKind({ ...current, content: withoutQuery }, command.blockKind, state.index)
+    : { ...current, content: withoutQuery }
   const focusRequest = { index: state.index, position: state.start }
   activeIndex.value = state.index
   closeSlash()
   commit(next, focusRequest)
+  if (command.action !== 'BLOCK') {
+    pendingInsert.value = { source: source.value, index: state.index, start: state.start, end: state.start }
+    emitExternalCommand(command)
+  }
 }
 
 function closeSlash() {
@@ -836,6 +886,7 @@ function onSelection(index: number, event: Event) {
   if (!block) return
   const selectionStart = Math.min(textarea.selectionStart, textarea.selectionEnd, block.content.length)
   const selectionEnd = Math.min(Math.max(textarea.selectionStart, textarea.selectionEnd), block.content.length)
+  selectionRange.value = { index, start: selectionStart, end: selectionEnd }
   const blockStart = blocks.value.slice(0, index).reduce((sum, item) => sum + serializeBlock(item).length + 1, 0) + contentSourceOffset(block)
   const blockEnd = blockStart + block.content.length
   emit('selection-change', blockStart + selectionStart, blockStart + selectionEnd, {
@@ -869,10 +920,10 @@ function focusHeading(index: number) {
 }
 
 function insertText(text: string, replaceSlash = false) {
-  if (props.readonly) return
+  if (props.readonly) return false
   const index = clampIndex(activeIndex.value, blocks.value.length)
   const current = blocks.value[index]
-  if (!current) return
+  if (!current) return false
   const textarea = editorRefs.value[index]
   let start = Math.min(textarea?.selectionStart ?? current.content.length, current.content.length)
   let end = Math.min(textarea?.selectionEnd ?? start, current.content.length)
@@ -886,6 +937,13 @@ function insertText(text: string, replaceSlash = false) {
     }
   }
 
+  insertTextAt(index, start, end, text)
+  return true
+}
+
+function insertTextAt(index: number, start: number, end: number, text: string) {
+  const current = blocks.value[index]
+  if (!current) return false
   const standalone = /^\{\{(?:card|embed):/.test(text.trim()) && !text.includes('\n')
   const next = cloneBlocks()
   if (standalone && current.kind !== 'CODE') {
@@ -900,7 +958,7 @@ function insertText(text: string, replaceSlash = false) {
     activeIndex.value = focusIndex
     closeSlash()
     commit(next, { index: focusIndex, position: after.length })
-    return
+    return true
   }
 
   const needsLeadingSpace = start > 0 && !/\s$/.test(current.content.slice(0, start)) && !/^\s/.test(text)
@@ -912,6 +970,60 @@ function insertText(text: string, replaceSlash = false) {
   }
   closeSlash()
   commit(next, { index, position: start + inserted.length })
+  return true
+}
+
+function requestExternalCommand(command: Exclude<DocumentEditorCommand, { action: 'BLOCK' }>) {
+  if (!capturePendingInsert()) return
+  emitExternalCommand(command)
+}
+
+function capturePendingInsert() {
+  if (props.readonly) return false
+  const index = clampIndex(activeIndex.value, blocks.value.length)
+  const current = blocks.value[index]
+  if (!current) return false
+  const textarea = editorRefs.value[index]
+  const rememberedRange = selectionRange.value.index === index ? selectionRange.value : null
+  const start = Math.min(textarea?.selectionStart ?? rememberedRange?.start ?? current.content.length, current.content.length)
+  const end = Math.min(textarea?.selectionEnd ?? rememberedRange?.end ?? start, current.content.length)
+  pendingInsert.value = { source: source.value, index, start: Math.min(start, end), end: Math.max(start, end) }
+  return true
+}
+
+function emitExternalCommand(command: Exclude<DocumentEditorCommand, { action: 'BLOCK' }>) {
+  if (command.action === 'CONTENT_CARD') emit('request-content-card', { commandId: command.id, kind: command.cardKind })
+  else emit('request-reference', { commandId: command.id })
+}
+
+function requestContentCard(kind: DocumentContentCardKind | null = null) {
+  const command = kind
+    ? DOCUMENT_EDITOR_COMMANDS.find((value) => value.action === 'CONTENT_CARD' && value.cardKind === kind)
+    : null
+  if (command?.action === 'CONTENT_CARD') requestExternalCommand(command)
+  else if (capturePendingInsert()) emit('request-content-card', { commandId: null, kind: null })
+}
+
+function requestReference() {
+  const command = DOCUMENT_EDITOR_COMMANDS.find((value) => value.action === 'REFERENCE')
+  if (command?.action === 'REFERENCE') requestExternalCommand(command)
+}
+
+function insertPendingText(text: string) {
+  const pending = pendingInsert.value
+  if (!pending) return false
+  if (props.readonly || pending.source !== source.value) {
+    pendingInsert.value = null
+    return false
+  }
+  pendingInsert.value = null
+  return insertTextAt(pending.index, pending.start, pending.end, text)
+}
+
+function cancelPendingInsert(restore = true) {
+  const pending = pendingInsert.value
+  pendingInsert.value = null
+  if (restore && pending) scheduleFocus({ index: clampIndex(pending.index, blocks.value.length), position: pending.start })
 }
 
 function focus() {
@@ -919,7 +1031,7 @@ function focus() {
   focusAt(index, editorRefs.value[index]?.selectionStart ?? 0)
 }
 
-defineExpose({ insertText, focus, undo, redo, closeOutline })
+defineExpose({ insertText, insertPendingText, cancelPendingInsert, capturePendingInsert, requestContentCard, requestReference, focus, undo, redo, closeOutline })
 
 function isListBlock(block: EditorBlock) {
   return block.kind === 'BULLET' || block.kind === 'NUMBERED' || block.kind === 'TODO'
@@ -927,6 +1039,14 @@ function isListBlock(block: EditorBlock) {
 
 function canChangeIndent(block: EditorBlock, direction: -1 | 1) {
   return direction > 0 ? block.indent.length < 12 : block.indent.length > 0
+}
+
+function resolveSlashPlacement(textarea: HTMLTextAreaElement | null | undefined): 'above' | 'below' {
+  if (!textarea || typeof window === 'undefined') return 'below'
+  const bounds = textarea.getBoundingClientRect()
+  const viewportHeight = window.visualViewport?.height ?? window.innerHeight
+  const spaceBelow = viewportHeight - bounds.bottom
+  return spaceBelow < 330 && bounds.top > spaceBelow ? 'above' : 'below'
 }
 
 function setEditorRef(index: number, value: unknown) {
@@ -943,6 +1063,7 @@ function focusAt(index: number, position: number) {
   const target = Math.max(0, Math.min(position, textarea.value.length))
   textarea.focus()
   textarea.setSelectionRange(target, target)
+  selectionRange.value = { index, start: target, end: target }
   resize(textarea)
 }
 
@@ -963,7 +1084,7 @@ function onRootBlur(event: FocusEvent) {
 }
 
 function blockLabel(block: EditorBlock) {
-  return commands.find((command) => command.kind === block.kind)?.title ?? '正文'
+  return blockCommandFor(block.kind)?.title ?? '正文'
 }
 
 function blockGlyph(block: EditorBlock, index: number) {
@@ -1157,7 +1278,7 @@ function clampIndex(index: number, length: number) {
 }
 
 function isBlockKind(value: unknown): value is BlockKind {
-  return typeof value === 'string' && commands.some((command) => command.kind === value)
+  return typeof value === 'string' && Boolean(blockCommandFor(value as BlockKind))
 }
 </script>
 
@@ -1207,24 +1328,26 @@ function isBlockKind(value: unknown): value is BlockKind {
               >
               <kbd>Esc</kbd>
             </label>
-            <div class="insert-menu-group">基础</div>
-            <div v-if="filteredInsertCommands.length" class="insert-menu-options" role="listbox" aria-label="可插入内容">
-              <button
-                v-for="(command, commandIndex) in filteredInsertCommands"
-                :key="command.kind"
-                type="button"
-                class="insert-menu-item"
-                :class="{ active: insertSelection === commandIndex }"
-                :aria-selected="insertSelection === commandIndex"
-                :data-insert-command="command.kind"
-                role="option"
-                @mouseenter="insertSelection = commandIndex"
-                @mousedown.prevent
-                @click="chooseInsertCommand(command.kind)"
-              >
-                <span class="insert-menu-icon"><v-icon :icon="command.icon" size="18" /></span>
-                <span class="insert-menu-copy"><strong>{{ command.title }}</strong><small>{{ command.description }}</small></span>
-              </button>
+            <div v-if="filteredInsertCommands.length" class="insert-menu-groups" role="listbox" aria-label="可插入内容">
+              <section v-for="group in insertCommandGroups" :key="group.id" class="insert-menu-section">
+                <div class="insert-menu-group">{{ group.label }}</div>
+                <button
+                  v-for="command in group.commands"
+                  :key="command.id"
+                  type="button"
+                  class="insert-menu-item"
+                  :class="{ active: insertSelection === filteredInsertCommands.indexOf(command) }"
+                  :aria-selected="insertSelection === filteredInsertCommands.indexOf(command)"
+                  :data-insert-command="command.action === 'BLOCK' ? command.blockKind : command.id"
+                  role="option"
+                  @mouseenter="insertSelection = filteredInsertCommands.indexOf(command)"
+                  @mousedown.prevent
+                  @click="chooseInsertCommand(command)"
+                >
+                  <span class="insert-menu-icon"><v-icon :icon="command.icon" size="18" /></span>
+                  <span class="insert-menu-copy"><strong>{{ command.title }}</strong><small>{{ command.description }}</small></span>
+                </button>
+              </section>
             </div>
             <div v-else class="insert-menu-empty" role="status">
               <v-icon icon="mdi-magnify-close" size="22" />
@@ -1239,7 +1362,7 @@ function isBlockKind(value: unknown): value is BlockKind {
         <v-divider class="toolbar-divider" vertical />
         <v-select
           class="kind-select"
-          :model-value="activeBlock.kind"
+          :model-value="selectedBlockKind"
           :items="kindItems"
           :disabled="readonly"
           aria-label="块类型"
@@ -1249,20 +1372,20 @@ function isBlockKind(value: unknown): value is BlockKind {
           @update:model-value="setKindFromValue"
         />
         <v-divider class="toolbar-divider" vertical />
-        <v-btn :disabled="readonly" icon="mdi-format-bold" size="small" title="粗体（Ctrl+B）" aria-label="粗体" @click="formatSelection('**')" />
-        <v-btn :disabled="readonly" icon="mdi-format-italic" size="small" title="斜体（Ctrl+I）" aria-label="斜体" @click="formatSelection('*')" />
-        <v-btn :disabled="readonly" class="d-none d-sm-inline-flex" icon="mdi-format-strikethrough-variant" size="small" title="删除线" aria-label="删除线" @click="formatSelection('~~')" />
+        <v-btn :disabled="readonly" :class="{ 'toolbar-active': inlineFormatActive('**') }" :aria-pressed="inlineFormatActive('**')" icon="mdi-format-bold" size="small" title="粗体（Ctrl+B）" aria-label="粗体" @click="formatSelection('**')" />
+        <v-btn :disabled="readonly" :class="{ 'toolbar-active': inlineFormatActive('*') }" :aria-pressed="inlineFormatActive('*')" icon="mdi-format-italic" size="small" title="斜体（Ctrl+I）" aria-label="斜体" @click="formatSelection('*')" />
+        <v-btn :disabled="readonly" :class="{ 'toolbar-active': inlineFormatActive('~~') }" :aria-pressed="inlineFormatActive('~~')" class="d-none d-sm-inline-flex" icon="mdi-format-strikethrough-variant" size="small" title="删除线" aria-label="删除线" @click="formatSelection('~~')" />
         <v-divider class="toolbar-divider d-none d-sm-flex" vertical />
-        <v-btn :disabled="readonly" class="d-none d-md-inline-flex" icon="mdi-format-list-bulleted" size="small" title="无序列表" aria-label="无序列表" @click="setKind('BULLET')" />
-        <v-btn :disabled="readonly" class="d-none d-md-inline-flex" icon="mdi-format-list-numbered" size="small" title="有序列表" aria-label="有序列表" @click="setKind('NUMBERED')" />
-        <v-btn :disabled="readonly" class="d-none d-md-inline-flex" icon="mdi-checkbox-marked-outline" size="small" title="待办" aria-label="待办" @click="setKind('TODO')" />
-        <v-btn :disabled="readonly" class="d-none d-md-inline-flex" icon="mdi-format-quote-close" size="small" title="引用" aria-label="引用" @click="setKind('QUOTE')" />
+        <v-btn :disabled="readonly" :class="{ 'toolbar-active': isBlockKindActive('BULLET') }" :aria-pressed="isBlockKindActive('BULLET')" class="d-none d-md-inline-flex" icon="mdi-format-list-bulleted" size="small" title="无序列表" aria-label="无序列表" @click="setKind('BULLET')" />
+        <v-btn :disabled="readonly" :class="{ 'toolbar-active': isBlockKindActive('NUMBERED') }" :aria-pressed="isBlockKindActive('NUMBERED')" class="d-none d-md-inline-flex" icon="mdi-format-list-numbered" size="small" title="有序列表" aria-label="有序列表" @click="setKind('NUMBERED')" />
+        <v-btn :disabled="readonly" :class="{ 'toolbar-active': isBlockKindActive('TODO') }" :aria-pressed="isBlockKindActive('TODO')" class="d-none d-md-inline-flex" icon="mdi-checkbox-marked-outline" size="small" title="待办" aria-label="待办" @click="setKind('TODO')" />
+        <v-btn :disabled="readonly" :class="{ 'toolbar-active': isBlockKindActive('QUOTE') }" :aria-pressed="isBlockKindActive('QUOTE')" class="d-none d-md-inline-flex" icon="mdi-format-quote-close" size="small" title="引用" aria-label="引用" @click="setKind('QUOTE')" />
         <v-btn :disabled="readonly" icon="mdi-link-variant" size="small" title="链接（Ctrl+K）" aria-label="插入链接" @click="openLinkDialog()" />
         <v-menu location="bottom end" :offset="6" content-class="editor-more-overlay">
           <template #activator="{ props: menuProps }"><v-btn v-bind="menuProps" icon="mdi-dots-horizontal" size="small" title="更多格式" aria-label="更多格式" /></template>
           <v-list density="compact" min-width="190">
-            <v-list-item prepend-icon="mdi-format-indent-decrease" title="减少缩进" :disabled="readonly || !targetIndices.length" @click="indentSelected(-1)" />
-            <v-list-item prepend-icon="mdi-format-indent-increase" title="增加缩进" :disabled="readonly || !targetIndices.length" @click="indentSelected(1)" />
+            <v-list-item prepend-icon="mdi-format-indent-decrease" title="减少缩进" :disabled="readonly || !canOutdentSelection" @click="indentSelected(-1)" />
+            <v-list-item prepend-icon="mdi-format-indent-increase" title="增加缩进" :disabled="readonly || !canIndentSelection" @click="indentSelected(1)" />
             <v-list-item prepend-icon="mdi-arrow-up" title="上移所选块" :disabled="readonly || targetIndices[0] === 0" @click="moveSelected(-1)" />
             <v-list-item prepend-icon="mdi-arrow-down" title="下移所选块" :disabled="readonly || targetIndices.at(-1) === blocks.length - 1" @click="moveSelected(1)" />
             <v-divider />
@@ -1369,29 +1492,33 @@ function isBlockKind(value: unknown): value is BlockKind {
           <v-card
             v-if="slashState?.index === index"
             class="slash-menu"
+            :class="`slash-menu--${slashPlacement}`"
             role="listbox"
             aria-label="斜杠命令"
             aria-busy="false"
             elevation="0"
           >
-            <div class="slash-heading"><span>基础</span><kbd>↑↓</kbd><kbd>Enter</kbd></div>
+            <div class="slash-heading"><span>插入</span><kbd>↑↓</kbd><kbd>Enter</kbd></div>
             <div v-if="filteredCommands.length" class="slash-options">
-              <button
-                v-for="(command, commandIndex) in filteredCommands"
-                :key="command.kind"
-                type="button"
-                class="slash-command"
-                :class="{ active: slashSelection === commandIndex }"
-                :aria-selected="slashSelection === commandIndex"
-                :data-command="command.kind"
-                role="option"
-                @mousedown.prevent
-                @mouseenter="slashSelection = commandIndex"
-                @click="chooseSlashCommand(command.kind)"
-              >
-                <span class="slash-command-icon"><v-icon :icon="command.icon" size="18" /></span>
-                <span class="slash-command-copy"><strong>{{ command.title }}</strong><small>{{ command.description }}</small></span>
-              </button>
+              <section v-for="group in slashCommandGroups" :key="group.id" class="slash-section">
+                <div class="slash-group">{{ group.label }}</div>
+                <button
+                  v-for="command in group.commands"
+                  :key="command.id"
+                  type="button"
+                  class="slash-command"
+                  :class="{ active: slashSelection === filteredCommands.indexOf(command) }"
+                  :aria-selected="slashSelection === filteredCommands.indexOf(command)"
+                  :data-command="command.action === 'BLOCK' ? command.blockKind : command.id"
+                  role="option"
+                  @mousedown.prevent
+                  @mouseenter="slashSelection = filteredCommands.indexOf(command)"
+                  @click="chooseSlashCommand(command)"
+                >
+                  <span class="slash-command-icon"><v-icon :icon="command.icon" size="18" /></span>
+                  <span class="slash-command-copy"><strong>{{ command.title }}</strong><small>{{ command.description }}</small></span>
+                </button>
+              </section>
             </div>
             <div v-else class="slash-empty" role="status">
               <v-icon icon="mdi-text-search" size="22" />
@@ -1541,6 +1668,8 @@ function isBlockKind(value: unknown): value is BlockKind {
 .editor-toolbar :deep(.v-btn--disabled) { opacity: .28; }
 .editor-toolbar :deep(.v-btn__overlay) { background: #e7e9e8; }
 .editor-toolbar :deep(.v-btn:focus-visible) { outline: 2px solid rgba(47,111,235,.32); outline-offset: -1px; }
+.editor-toolbar :deep(.v-btn.toolbar-active) { color: #1677ff; background: #edf3ff; }
+.editor-toolbar :deep(.v-btn.toolbar-active .v-btn__overlay) { opacity: 0; }
 .editor-toolbar :deep(.v-btn.text-success),
 .editor-toolbar :deep(.text-success) { color: #00b96b !important; }
 .toolbar-divider { height: 18px; margin: 0 7px; color: #e7e9e8; }
@@ -1618,13 +1747,14 @@ function isBlockKind(value: unknown): value is BlockKind {
   font-size: 11px;
   font-weight: 500;
 }
-.insert-menu-options {
+.insert-menu-groups {
   display: flex;
   max-height: min(360px, calc(100dvh - 220px));
   flex-direction: column;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
+.insert-menu-section { display: contents; }
 .insert-menu-item {
   display: grid;
   width: 100%;
@@ -1884,6 +2014,7 @@ function isBlockKind(value: unknown): value is BlockKind {
   background: #fff;
   box-shadow: 0 8px 26px rgba(31,35,33,.14) !important;
 }
+.slash-menu--above { top: auto; bottom: calc(100% + 6px); }
 .slash-heading {
   display: flex;
   height: 28px;
@@ -1897,6 +2028,8 @@ function isBlockKind(value: unknown): value is BlockKind {
 .slash-heading kbd { display: inline-grid; min-width: 20px; height: 18px; place-items: center; padding: 0 4px; border: 1px solid #e1e4e2; border-radius: 4px; background: #f7f8f7; color: #8a8f8d; font: 10px/16px inherit; }
 .slash-heading kbd:first-of-type { margin-left: auto; }
 .slash-options { max-height: 356px; overflow-y: auto; overscroll-behavior: contain; }
+.slash-section { display: block; }
+.slash-group { height: 25px; padding: 7px 7px 3px; color: #8a8f8d; font-size: 11px; font-weight: 500; }
 .slash-command {
   display: grid;
   width: 100%;
@@ -2014,6 +2147,14 @@ function isBlockKind(value: unknown): value is BlockKind {
 }
 .link-dialog-actions :deep(.v-btn) { min-width: 64px; height: 32px; border-radius: 5px; font-size: 13px; }
 .link-dialog-actions :deep(.v-btn--disabled) { opacity: .42; }
+
+@media (min-width: 1101px) {
+  .editor-toolbar-inner { box-sizing: border-box; padding-left: 82px; }
+  .editor-toolbar :deep(.v-btn) { width: 26px; min-width: 26px; height: 26px; }
+  .kind-select { flex-basis: 71px; max-width: 71px; }
+  .editor-shell.with-outline .document-canvas { margin-left: 155px; }
+  .document-outline { right: 15px; width: 305px; padding: 35px 28px 32px; }
+}
 
 @media (max-width: 1100px) {
   .editor-toolbar { margin-right: 0; }

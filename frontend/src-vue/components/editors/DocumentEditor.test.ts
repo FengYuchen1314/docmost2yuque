@@ -272,6 +272,107 @@ describe('DocumentEditor', () => {
     expect(wrapper.get('button[aria-label="插入内容"]').attributes('aria-expanded')).toBe('false')
   })
 
+  it('uses the same grouped command registry for the toolbar and slash menus', async () => {
+    const wrapper = mountEditor('')
+    await wrapper.get('button[aria-label="插入内容"]').trigger('click')
+    await flushOverlay()
+
+    const insertMenu = document.querySelector<HTMLElement>('.insert-menu')
+    expect(insertMenu?.textContent).toContain('基础')
+    expect(insertMenu?.textContent).toContain('媒体')
+    expect(insertMenu?.textContent).toContain('内容')
+    expect(insertMenu?.textContent).toContain('关联')
+    expect(insertMenu?.querySelector('[data-insert-command="image"]')?.textContent).toContain('图片')
+    expect(insertMenu?.querySelector('[data-insert-command="page-reference"]')?.textContent).toContain('页面引用')
+
+    await wrapper.get('button[aria-label="插入内容"]').trigger('click')
+    const input = wrapper.get<HTMLTextAreaElement>('textarea.block-input')
+    await input.setValue('/')
+    expect(wrapper.get('.slash-menu').text()).toContain('媒体')
+    expect(wrapper.get('[data-command="image"]').text()).toContain('图片')
+    expect(wrapper.get('[data-command="page-reference"]').text()).toContain('页面引用')
+  })
+
+  it('keeps an exact slash insertion point for external cards and rejects a stale document', async () => {
+    const wrapper = mountEditor('开头 /image 结尾')
+    const input = wrapper.get<HTMLTextAreaElement>('textarea.block-input')
+    input.element.focus()
+    input.element.setSelectionRange(9, 9)
+    await input.trigger('input')
+    await wrapper.get('[data-command="image"]').trigger('click')
+
+    expect(wrapper.emitted('request-content-card')?.at(-1)).toEqual([{ commandId: 'image', kind: 'image' }])
+    expect(lastUpdate(wrapper)).toBe('开头  结尾')
+
+    const editor = wrapper.vm as unknown as { insertPendingText: (text: string) => boolean }
+    expect(editor.insertPendingText('{{card:test}}')).toBe(true)
+    await nextTick()
+    expect(lastUpdate(wrapper)).toBe('开头\n{{card:test}}\n结尾')
+
+    const stale = mountEditor('/image')
+    await stale.get<HTMLTextAreaElement>('textarea.block-input').setValue('/image')
+    await stale.get('[data-command="image"]').trigger('click')
+    await stale.setProps({ modelValue: '远端协作内容' })
+    expect((stale.vm as unknown as { insertPendingText: (text: string) => boolean }).insertPendingText('{{card:test}}')).toBe(false)
+    expect(lastUpdate(stale)).not.toBe('{{card:test}}')
+  })
+
+  it('restores focus when an external insertion is cancelled and ignores IME composition commands', async () => {
+    const wrapper = mountEditor('正文')
+    const input = wrapper.get<HTMLTextAreaElement>('textarea.block-input')
+    input.element.focus()
+    input.element.setSelectionRange(1, 1)
+    const editor = wrapper.vm as unknown as {
+      requestReference: () => void
+      cancelPendingInsert: () => void
+    }
+
+    editor.requestReference()
+    expect(wrapper.emitted('request-reference')?.at(-1)).toEqual([{ commandId: 'page-reference' }])
+    editor.cancelPendingInsert()
+    await nextTick()
+    expect(document.activeElement).toBe(input.element)
+    expect(input.element.selectionStart).toBe(1)
+
+    await input.setValue('/')
+    const composingEnter = dispatchKey(input.element, 'Enter', { isComposing: true })
+    expect(composingEnter.defaultPrevented).toBe(false)
+    expect(wrapper.find('.slash-menu').exists()).toBe(true)
+    expect(lastUpdate(wrapper)).toBe('/')
+
+    await wrapper.get('button[aria-label="插入内容"]').trigger('click')
+    await flushOverlay()
+    const search = document.querySelector<HTMLInputElement>('input[aria-label="搜索插入内容"]')!
+    const composingMenuEnter = dispatchKey(search, 'Enter', { isComposing: true })
+    await nextTick()
+    expect(composingMenuEnter.defaultPrevented).toBe(false)
+    expect(document.querySelector('.insert-menu')).not.toBeNull()
+    expect(lastUpdate(wrapper)).toBe('/')
+  })
+
+  it('reflects active formatting, blocks paragraph indentation, and flips a low slash menu upward', async () => {
+    const wrapper = mountEditor('**粗体**')
+    const input = wrapper.get<HTMLTextAreaElement>('textarea.block-input')
+    input.element.focus()
+    input.element.setSelectionRange(2, 4)
+    await input.trigger('select')
+    expect(wrapper.get('button[aria-label="粗体"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('button[aria-label="斜体"]').attributes('aria-pressed')).toBe('false')
+    expect(wrapper.get('button[aria-label="无序列表"]').attributes('aria-pressed')).toBe('false')
+
+    await wrapper.get('button[aria-label="更多格式"]').trigger('click')
+    await flushOverlay()
+    const indent = Array.from(document.querySelectorAll<HTMLElement>('.v-list-item')).find((item) => item.textContent?.includes('增加缩进'))
+    expect(indent?.classList.contains('v-list-item--disabled')).toBe(true)
+
+    Object.defineProperty(input.element, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 620, bottom: 660, left: 0, right: 400, width: 400, height: 40, x: 0, y: 620, toJSON: () => ({}) }),
+    })
+    await input.setValue('/')
+    expect(wrapper.get('.slash-menu').classes()).toContain('slash-menu--above')
+  })
+
   it('keeps insert and link actions disabled in readonly mode', async () => {
     const wrapper = mountEditor('只读正文', { readonly: true })
     const insert = wrapper.get('button[aria-label="插入内容"]')

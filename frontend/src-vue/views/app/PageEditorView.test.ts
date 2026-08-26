@@ -1,29 +1,45 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { ref } from 'vue'
+import { ref, type Ref } from 'vue'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CatalogTree, Comment, Page } from '../../../src/types'
+import { isNetworkFailure, queuePageUpdate } from '../../../src/lib/offline'
 import { vuetify } from '../../plugins/vuetify'
-import { post } from '../../services/api'
+import { ApiError, post } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
 import PageEditorView from './PageEditorView.vue'
 
 vi.mock('../../services/api', () => ({
-  ApiError: class ApiError extends Error { problem = { code: '' } },
+  ApiError: class ApiError extends Error {
+    constructor(public problem: { status: number; code: string; title: string; detail: string }) {
+      super(problem.detail || problem.title)
+    }
+  },
   messageOf: (value: unknown) => value instanceof Error ? value.message : String(value),
   post: vi.fn(),
   upload: vi.fn(),
 }))
 
+interface CollaborationMock {
+  status: Ref<string>
+  error: Ref<string>
+  peers: Ref<unknown[]>
+}
+let collaborationMock: CollaborationMock | null = null
+
 vi.mock('../../composables/usePageCollaboration', () => ({
   usePageCollaboration: () => {
     const body = ref('')
+    const status = ref('idle')
+    const error = ref('')
+    const peers = ref<unknown[]>([])
+    collaborationMock = { status, error, peers }
     return {
       body,
-      status: ref('idle'),
-      error: ref(''),
-      peers: ref([]),
+      status,
+      error,
+      peers,
       lastAcknowledgedSequence: ref(null),
       connect: vi.fn(),
       disconnect: vi.fn(),
@@ -55,8 +71,14 @@ let router: Router | null = null
 
 beforeEach(() => {
   vi.mocked(post).mockReset()
+  vi.mocked(isNetworkFailure).mockReset()
+  vi.mocked(isNetworkFailure).mockReturnValue(false)
+  vi.mocked(queuePageUpdate).mockReset()
+  vi.mocked(queuePageUpdate).mockImplementation(async (update) => update)
+  collaborationMock = null
   localStorage.clear()
   stubViewport(1280)
+  vi.stubGlobal('visualViewport', null)
   vi.stubGlobal('ResizeObserver', class {
     observe() {}
     unobserve() {}
@@ -80,6 +102,14 @@ describe('PageEditorView Yuque editor shell', () => {
 
     wrapper!.get('header.editor-header')
     expect(wrapper!.get('.header-document-title').text()).toBe('初始标题')
+    expect(wrapper!.find('.document-lock').exists()).toBe(false)
+
+    const saveStatus = wrapper!.get('.editor-header-status')
+    expect(saveStatus.text()).toBe('已保存')
+    expect(saveStatus.attributes()).toMatchObject({ role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' })
+    expect(saveStatus.findAll('.v-icon')).toHaveLength(1)
+    expect(saveStatus.find('.mdi-check-circle-outline').exists()).toBe(true)
+    expect(saveStatus.find('.mdi-cloud-outline').exists()).toBe(false)
 
     const title = wrapper!.get<HTMLTextAreaElement>('textarea[aria-label="文稿标题"]')
     expect(title.element.value).toBe('初始标题')
@@ -87,6 +117,200 @@ describe('PageEditorView Yuque editor shell', () => {
 
     expect(wrapper!.get('.header-document-title').text()).toBe('正文内标题')
     expect(wrapper!.get<HTMLTextAreaElement>('textarea[aria-label="文稿标题"]').element.value).toBe('正文内标题')
+  })
+
+  it('announces the unsaved, saving and saved lifecycle with one precise icon', async () => {
+    const page = pageFixture('page-a', '保存状态')
+    let resolveUpdate!: (value: Page) => void
+    const pendingUpdate = new Promise<Page>((resolve) => { resolveUpdate = resolve })
+    installImmediatePageApi([page], [], { update: () => pendingUpdate })
+    await mountPageEditor(page.id)
+
+    const input = wrapper!.get<HTMLTextAreaElement>('textarea.block-input')
+    await input.setValue('正在编辑的正文')
+    expect(wrapper!.get('.editor-header-status').text()).toBe('未保存')
+    expect(wrapper!.get('.editor-header-status').find('.mdi-circle-medium').exists()).toBe(true)
+
+    await input.trigger('blur', { relatedTarget: document.body })
+    expect(wrapper!.get('.editor-header-status').text()).toBe('保存中…')
+    expect(wrapper!.get('.editor-header-status').find('.mdi-loading').exists()).toBe(true)
+    expect(wrapper!.get('.editor-header-status').findAll('.v-icon')).toHaveLength(1)
+
+    resolveUpdate({ ...page, content: { type: 'doc', content: [{ type: 'paragraph', text: '正在编辑的正文' }] }, plainText: '正在编辑的正文', draftRevision: 2 })
+    await flushPromises()
+
+    expect(wrapper!.get('.editor-header-status').text()).toBe('已保存')
+    expect(wrapper!.get('.editor-header-status').find('.mdi-check-circle-outline').exists()).toBe(true)
+  })
+
+  it('announces an offline queued save without presenting it as synced', async () => {
+    const page = pageFixture('page-a', '离线保存')
+    const networkFailure = new TypeError('network unavailable')
+    vi.mocked(isNetworkFailure).mockImplementation((value) => value === networkFailure)
+    installImmediatePageApi([page], [], { update: async () => { throw networkFailure } })
+    await mountPageEditor(page.id)
+
+    const input = wrapper!.get<HTMLTextAreaElement>('textarea.block-input')
+    await input.setValue('排队等待同步的正文')
+    await input.trigger('blur', { relatedTarget: document.body })
+    await flushPromises()
+
+    const saveStatus = wrapper!.get('.editor-header-status')
+    expect(saveStatus.text()).toBe('已离线保存，待同步')
+    expect(saveStatus.find('.mdi-cloud-off-outline').exists()).toBe(true)
+    expect(vi.mocked(queuePageUpdate)).toHaveBeenCalledOnce()
+  })
+
+  it('announces revision conflicts independently from ordinary save errors', async () => {
+    const page = pageFixture('page-a', '冲突保存')
+    const conflict = new ApiError({ status: 409, code: 'PAGE_REVISION_CONFLICT', title: '版本冲突', detail: '远端版本已更新' })
+    installImmediatePageApi([page], [], { update: async () => { throw conflict } })
+    await mountPageEditor(page.id)
+
+    const input = wrapper!.get<HTMLTextAreaElement>('textarea.block-input')
+    await input.setValue('与远端冲突的正文')
+    await input.trigger('blur', { relatedTarget: document.body })
+    await flushPromises()
+
+    const saveStatus = wrapper!.get('.editor-header-status')
+    expect(saveStatus.text()).toBe('保存冲突')
+    expect(saveStatus.find('.mdi-alert-circle-outline').exists()).toBe(true)
+  })
+
+  it('shows the live collaboration phase and prioritizes connection health over stale peers', async () => {
+    installImmediatePageApi([pageFixture('page-a', '协作状态')])
+    await mountPageEditor('page-a')
+    const collaboration = collaborationMock!
+    const state = () => wrapper!.get('.collaboration-state')
+
+    for (const phase of ['idle', 'connecting', 'syncing', 'reconnecting']) {
+      collaboration.status.value = phase
+      await flushPromises()
+      expect(state().get('.collaboration-label').text()).toBe('连接中')
+      expect(state().attributes('aria-label')).toBe('实时协作：连接中')
+    }
+
+    collaboration.status.value = 'connected'
+    await flushPromises()
+    expect(state().get('.collaboration-label').text()).toBe('已连接')
+    expect(state().find('.collaboration-connected').exists()).toBe(true)
+
+    collaboration.peers.value = [{}, {}]
+    await flushPromises()
+    expect(state().get('.collaboration-label').text()).toBe('3 人协作')
+    expect(state().attributes('aria-label')).toBe('实时协作：3 人协作')
+
+    collaboration.status.value = 'unavailable'
+    await flushPromises()
+    expect(state().get('.collaboration-label').text()).toBe('协作不可用')
+    expect(state().find('.collaboration-unavailable').exists()).toBe(true)
+  })
+
+  it('routes a slash image command through the content-card palette and keeps its exact insertion point', async () => {
+    installImmediatePageApi([pageFixture('page-a', '插入图片')])
+    await mountPageEditor('page-a')
+
+    const input = wrapper!.get<HTMLTextAreaElement>('textarea.block-input')
+    await input.setValue('/image')
+    input.element.focus()
+    input.element.setSelectionRange(6, 6)
+    await input.trigger('input')
+    await wrapper!.get('[data-command="image"]').trigger('click')
+    await flushPromises()
+
+    const palette = wrapper!.findComponent({ name: 'ContentCardPalette' })
+    expect(palette.props('modelValue')).toBe(true)
+    expect(palette.props('allowedKinds')).toEqual(['image'])
+
+    palette.vm.$emit('insert', { token: '{{card:test-image}}' })
+    palette.vm.$emit('update:modelValue', false)
+    await flushPromises()
+
+    expect(wrapper!.get<HTMLTextAreaElement>('textarea.block-input').element.value).toBe('{{card:test-image}}')
+    expect(palette.props('allowedKinds')).toEqual([])
+
+    const insertedInput = wrapper!.get<HTMLTextAreaElement>('textarea.block-input')
+    insertedInput.element.focus()
+    insertedInput.element.setSelectionRange(insertedInput.element.value.length, insertedInput.element.value.length)
+    await wrapper!.get('header [aria-label="插入内容"]').trigger('click')
+    await flushPromises()
+    expect(palette.props('modelValue')).toBe(true)
+    expect(palette.props('allowedKinds')).toEqual([])
+    palette.vm.$emit('update:modelValue', false)
+    palette.vm.$emit('cancel')
+    await flushPromises()
+    expect(document.activeElement).toBe(insertedInput.element)
+  })
+
+  it('opens the reference panel directly in insertion mode and restores editor focus when cancelled', async () => {
+    installImmediatePageApi([pageFixture('page-a', '插入引用')])
+    await mountPageEditor('page-a')
+
+    const input = wrapper!.get<HTMLTextAreaElement>('textarea.block-input')
+    input.element.focus()
+    input.element.setSelectionRange(2, 2)
+    await wrapper!.get('[aria-label="引用"]').trigger('click')
+    await flushPromises()
+
+    const references = wrapper!.findComponent({ name: 'ReferencePanel' })
+    expect(wrapper!.find('aside.editor-side-panel--references').exists()).toBe(true)
+    expect(references.props('initialTab')).toBe('INSERT')
+
+    const token = '[[page:target|mode=link]]'
+    const original = input.element.value
+    references.vm.$emit('insert', { token })
+    await flushPromises()
+    expect(wrapper!.find('aside.editor-side-panel--references').exists()).toBe(false)
+    expect(wrapper!.get<HTMLTextAreaElement>('textarea.block-input').element.value).toBe(`${original.slice(0, 2)} ${token} ${original.slice(2)}`)
+
+    const insertedInput = wrapper!.get<HTMLTextAreaElement>('textarea.block-input')
+    insertedInput.element.focus()
+    insertedInput.element.setSelectionRange(1, 1)
+    await wrapper!.get('[aria-label="引用"]').trigger('click')
+    await flushPromises()
+    await wrapper!.get('[aria-label="关闭侧栏"]').trigger('click')
+    await flushPromises()
+    expect(wrapper!.find('aside.editor-side-panel--references').exists()).toBe(false)
+    expect(document.activeElement).toBe(insertedInput.element)
+    expect(insertedInput.element.selectionStart).toBe(1)
+  })
+
+  it('keeps relationship browsing insertable and isolates superseded external insert surfaces', async () => {
+    installImmediatePageApi([pageFixture('page-a', '关系浏览')])
+    await mountPageEditor('page-a')
+
+    const input = wrapper!.get<HTMLTextAreaElement>('textarea.block-input')
+    input.element.focus()
+    input.element.setSelectionRange(1, 1)
+    await wrapper!.get('[aria-label="更多操作"]').trigger('click')
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const relationshipItem = Array.from(document.querySelectorAll<HTMLElement>('.v-list-item'))
+      .find((item) => item.textContent?.includes('页面关系'))
+    expect(relationshipItem).toBeTruthy()
+    relationshipItem!.click()
+    await flushPromises()
+
+    let references = wrapper!.findComponent({ name: 'ReferencePanel' })
+    expect(references.props('initialTab')).toBe('OUTGOING')
+    expect(references.props('allowInsert')).toBe(true)
+
+    await wrapper!.get('header [aria-label="插入内容"]').trigger('click')
+    await flushPromises()
+    const palette = wrapper!.findComponent({ name: 'ContentCardPalette' })
+    expect(wrapper!.find('aside.editor-side-panel--references').exists()).toBe(false)
+    expect(palette.props('modelValue')).toBe(true)
+
+    await wrapper!.get('[aria-label="引用"]').trigger('click')
+    await flushPromises()
+    references = wrapper!.findComponent({ name: 'ReferencePanel' })
+    expect(palette.props('modelValue')).toBe(false)
+    expect(references.props('initialTab')).toBe('INSERT')
+
+    palette.vm.$emit('cancel')
+    references.vm.$emit('insert', { token: '[[page:isolated|mode=link]]' })
+    await flushPromises()
+    expect(wrapper!.get<HTMLTextAreaElement>('textarea.block-input').element.value).toContain('[[page:isolated|mode=link]]')
   })
 
   it('does not let a slower catalog page response overwrite the most recently selected page', async () => {
@@ -116,11 +340,13 @@ describe('PageEditorView Yuque editor shell', () => {
     expect(slowRow).toBeTruthy()
     await slowRow!.trigger('click')
     await flushPromises()
+    await vi.waitFor(() => expect(router!.currentRoute.value.params.pageId).toBe(slow.id))
 
     const latestRow = wrapper!.findAll('.catalog-row').find((row) => row.text().includes(latest.title))
     expect(latestRow).toBeTruthy()
     await latestRow!.trigger('click')
     await flushPromises()
+    await vi.waitFor(() => expect(router!.currentRoute.value.params.pageId).toBe(latest.id))
 
     expect(router!.currentRoute.value.params.pageId).toBe(latest.id)
     expect(wrapper!.get<HTMLTextAreaElement>('textarea[aria-label="文稿标题"]').element.value).toBe(latest.title)
@@ -400,6 +626,7 @@ describe('PageEditorView Yuque editor shell', () => {
     await mountPageEditor(original.id)
 
     expect(wrapper!.text()).toContain('正文已启用只读保护')
+    expect(wrapper!.get('.document-lock').attributes('title')).toBe('正文只读保护')
     expect(wrapper!.get('textarea.block-input').attributes('readonly')).toBeDefined()
     const title = wrapper!.get<HTMLTextAreaElement>('textarea[aria-label="文稿标题"]')
     expect(title.attributes('readonly')).toBeUndefined()
@@ -474,7 +701,11 @@ async function mountPageEditor(pageId: string) {
   await flushPromises()
 }
 
-function installImmediatePageApi(pages: Page[], comments: Comment[] = []) {
+function installImmediatePageApi(
+  pages: Page[],
+  comments: Comment[] = [],
+  options: { update?: (page: Page, body: unknown) => Page | Promise<Page> } = {},
+) {
   vi.mocked(post).mockImplementation(async (path, body) => {
     if (path === '/api/v1/pages/get') {
       const pageId = (body as { pageId: string }).pageId
@@ -489,6 +720,7 @@ function installImmediatePageApi(pages: Page[], comments: Comment[] = []) {
     if (path === '/api/v1/pages/update') {
       const update = body as { pageId: string; title: string; content: unknown }
       const current = pages.find((page) => page.id === update.pageId) ?? pages[0]!
+      if (options.update) return options.update(current, body)
       return { ...current, title: update.title, content: update.content, draftRevision: current.draftRevision + 1 }
     }
     if (path === '/api/v1/activities/page-view') return null
