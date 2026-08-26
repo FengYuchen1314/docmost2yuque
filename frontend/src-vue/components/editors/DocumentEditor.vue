@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { DocumentSettings } from '../../../src/types'
 
 type BlockKind = 'PARAGRAPH' | 'H1' | 'H2' | 'QUOTE' | 'BULLET' | 'NUMBERED' | 'TODO' | 'CODE'
@@ -35,6 +35,16 @@ interface LinkRequest {
   label: string
 }
 
+interface SelectionContext {
+  text: string
+  blockIndex: number
+  blockKind: BlockKind
+  blockStart: number
+  blockEnd: number
+  selectionStart: number
+  selectionEnd: number
+}
+
 interface CommandDefinition {
   kind: BlockKind
   title: string
@@ -43,18 +53,23 @@ interface CommandDefinition {
   keywords: string
 }
 
+type TemplateFocusable = HTMLElement | { $el?: HTMLElement } | null
+
 const props = withDefaults(defineProps<{
   modelValue: string
   documentSettings?: DocumentSettings | Record<string, unknown> | null
   readonly?: boolean
   placeholder?: string
   showOutline?: boolean
+  forceOutlineClosed?: boolean
   title?: string
+  titleReadonly?: boolean
 }>(), {
   documentSettings: undefined,
   readonly: false,
   placeholder: '输入 / 唤起命令，或直接开始写作…',
   showOutline: undefined,
+  forceOutlineClosed: false,
 })
 
 const emit = defineEmits<{
@@ -62,7 +77,8 @@ const emit = defineEmits<{
   'update:title': [value: string]
   blur: []
   slash: [context: { blockIndex: number; query: string }]
-  'selection-change': [start: number, end: number]
+  'selection-change': [start: number, end: number, context: SelectionContext]
+  'outline-open-change': [open: boolean]
 }>()
 
 const commands: CommandDefinition[] = [
@@ -84,15 +100,23 @@ const draggingIndex = ref<number | null>(null)
 const dropIndex = ref<number | null>(null)
 const slashState = ref<SlashState | null>(null)
 const slashSelection = ref(0)
-const outlineOpen = ref(true)
+const compactOutline = ref(isCompactOutlineViewport())
+const outlineOpen = ref(!compactOutline.value)
+const insertMenuOpen = ref(false)
+const insertQuery = ref('')
+const insertSelection = ref(0)
 const linkRequest = ref<LinkRequest | null>(null)
 const linkLabel = ref('')
 const linkUrl = ref('')
 const linkError = ref('')
+const insertSearchRef = ref<HTMLInputElement | null>(null)
+const outlineCloseRef = ref<TemplateFocusable>(null)
 const editorRefs = ref<Array<HTMLTextAreaElement | null>>([])
 const undoStack = ref<string[]>([])
 const redoStack = ref<string[]>([])
 let lastHistory: { key: string; at: number } | null = null
+let outlineMediaQuery: MediaQueryList | null = null
+let outlineReturnFocus: HTMLElement | null = null
 
 const blocks = computed(() => parseMarkdown(source.value))
 const activeBlock = computed(() => blocks.value[clampIndex(activeIndex.value, blocks.value.length)] ?? emptyBlock())
@@ -106,6 +130,7 @@ const headings = computed(() => blocks.value.flatMap((block, index) => {
 }))
 const settings = computed(() => normalizeSettings(props.documentSettings))
 const outlineEnabled = computed(() => props.showOutline ?? settings.value.showOutline)
+const resolvedTitleReadonly = computed(() => props.titleReadonly ?? props.readonly)
 const editorClasses = computed(() => [
   `document-width-${settings.value.pageWidth.toLowerCase()}`,
   `document-font-${settings.value.fontFamily.toLowerCase()}`,
@@ -115,6 +140,11 @@ const editorClasses = computed(() => [
 const kindItems = computed(() => commands.map(({ kind, title, icon }) => ({ value: kind, title, prependIcon: icon })))
 const filteredCommands = computed(() => {
   const query = slashState.value?.query.trim().toLocaleLowerCase() ?? ''
+  if (!query) return commands
+  return commands.filter((command) => `${command.title} ${command.description} ${command.keywords}`.toLocaleLowerCase().includes(query))
+})
+const filteredInsertCommands = computed(() => {
+  const query = insertQuery.value.trim().toLocaleLowerCase()
   if (!query) return commands
   return commands.filter((command) => `${command.title} ${command.description} ${command.keywords}`.toLocaleLowerCase().includes(query))
 })
@@ -139,8 +169,90 @@ watch(source, () => nextTick(resizeAll))
 watch(filteredCommands, (items) => {
   slashSelection.value = Math.min(slashSelection.value, Math.max(0, items.length - 1))
 })
+watch(filteredInsertCommands, (items) => {
+  insertSelection.value = Math.min(insertSelection.value, Math.max(0, items.length - 1))
+})
+watch(insertMenuOpen, (open) => {
+  if (!open) return
+  insertQuery.value = ''
+  insertSelection.value = 0
+  nextTick(() => insertSearchRef.value?.focus())
+})
+watch(() => props.forceOutlineClosed, (forced) => { if (forced) closeOutline(false) }, { immediate: true })
 
-onMounted(resizeAll)
+onMounted(() => {
+  resizeAll()
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    outlineMediaQuery = window.matchMedia('(max-width: 1100px)')
+    compactOutline.value = outlineMediaQuery.matches
+    outlineMediaQuery.addEventListener('change', handleOutlineViewportChange)
+  }
+  if (compactOutline.value) setOutlineOpen(false)
+  else emit('outline-open-change', outlineOpen.value)
+  window.addEventListener('keydown', closeCompactOutlineOnEscape)
+})
+onBeforeUnmount(() => {
+  outlineMediaQuery?.removeEventListener('change', handleOutlineViewportChange)
+  window.removeEventListener('keydown', closeCompactOutlineOnEscape)
+})
+
+function isCompactOutlineViewport() {
+  if (typeof window === 'undefined') return false
+  return typeof window.matchMedia === 'function'
+    ? window.matchMedia('(max-width: 1100px)').matches
+    : window.innerWidth <= 1100
+}
+
+function setOutlineOpen(open: boolean) {
+  const next = open && !props.forceOutlineClosed
+  if (outlineOpen.value === next) return
+  outlineOpen.value = next
+  emit('outline-open-change', next)
+}
+
+function openOutline(event?: Event) {
+  if (props.forceOutlineClosed) return
+  if (compactOutline.value) {
+    const trigger = event?.currentTarget
+    outlineReturnFocus = trigger instanceof HTMLElement
+      ? trigger
+      : document.activeElement instanceof HTMLElement ? document.activeElement : null
+  }
+  setOutlineOpen(true)
+  if (compactOutline.value) void nextTick(() => {
+    if (outlineOpen.value && compactOutline.value) focusTemplateRef(outlineCloseRef.value)
+  })
+}
+
+function closeOutline(restoreFocus = true) {
+  const returnFocus = compactOutline.value && restoreFocus ? outlineReturnFocus : null
+  outlineReturnFocus = null
+  setOutlineOpen(false)
+  if (returnFocus) void nextTick(() => {
+    if (returnFocus.isConnected) returnFocus.focus()
+  })
+}
+
+function toggleOutline(event: Event) {
+  if (outlineOpen.value) closeOutline()
+  else openOutline(event)
+}
+
+function focusTemplateRef(value: TemplateFocusable) {
+  const element = value instanceof HTMLElement ? value : value?.$el
+  element?.focus()
+}
+
+function handleOutlineViewportChange(event: MediaQueryListEvent) {
+  compactOutline.value = event.matches
+  if (event.matches) closeOutline(false)
+}
+
+function closeCompactOutlineOnEscape(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || !compactOutline.value || !outlineOpen.value) return
+  event.preventDefault()
+  closeOutline()
+}
 
 function cloneBlocks() {
   return blocks.value.map((block) => ({ ...block }))
@@ -314,6 +426,7 @@ function onEditorKeydown(index: number, event: KeyboardEvent) {
   const textarea = event.currentTarget as HTMLTextAreaElement
   const current = blocks.value[index]
   if (!current) return
+  if (props.readonly) return
 
   if (slashState.value?.index === index) {
     if (event.key === 'ArrowDown') {
@@ -376,13 +489,17 @@ function onEditorKeydown(index: number, event: KeyboardEvent) {
     return
   }
   if (event.key === 'Tab') {
-    event.preventDefault()
-    indentSelected(event.shiftKey ? -1 : 1, { index, position: textarea.selectionStart })
+    const direction = event.shiftKey ? -1 : 1
+    if (isListBlock(current) && canChangeIndent(current, direction)) {
+      event.preventDefault()
+      indentSelected(direction, { index, position: textarea.selectionStart })
+    }
     return
   }
-  if (event.key === 'Enter' && current.kind !== 'CODE' && !event.shiftKey) {
+  if (event.key === 'Enter' && current.kind !== 'CODE') {
     event.preventDefault()
-    splitBlock(index, textarea.selectionStart, textarea.selectionEnd)
+    if (event.shiftKey) insertSoftBreak(index, textarea.selectionStart, textarea.selectionEnd)
+    else splitBlock(index, textarea.selectionStart, textarea.selectionEnd)
     return
   }
   if (event.key === 'Backspace' && textarea.selectionStart === 0 && textarea.selectionEnd === 0) {
@@ -396,6 +513,14 @@ function onEditorKeydown(index: number, event: KeyboardEvent) {
       mergePrevious(index)
     }
   }
+}
+
+function insertSoftBreak(index: number, start: number, end: number) {
+  const current = blocks.value[index]
+  if (!current) return
+  const next = cloneBlocks()
+  next[index] = { ...current, content: `${current.content.slice(0, start)}\u2028${current.content.slice(end)}` }
+  commit(next, { index, position: start + 1 }, `typing-${index}`)
 }
 
 function splitBlock(index: number, start: number, end: number) {
@@ -445,6 +570,34 @@ function addBlockAfter(index = activeIndex.value, kind: BlockKind = 'PARAGRAPH')
   selectionAnchor.value = null
   closeSlash()
   commit(next, { index: target, position: 0 })
+}
+
+function chooseInsertCommand(kind: BlockKind) {
+  insertMenuOpen.value = false
+  addBlockAfter(activeIndex.value, kind)
+}
+
+function onInsertMenuKeydown(event: KeyboardEvent) {
+  if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    if (filteredInsertCommands.value.length) insertSelection.value = (insertSelection.value + 1) % filteredInsertCommands.value.length
+    return
+  }
+  if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    if (filteredInsertCommands.value.length) insertSelection.value = (insertSelection.value - 1 + filteredInsertCommands.value.length) % filteredInsertCommands.value.length
+    return
+  }
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    const command = filteredInsertCommands.value[insertSelection.value]
+    if (command) chooseInsertCommand(command.kind)
+    return
+  }
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    insertMenuOpen.value = false
+  }
 }
 
 function removeSelected() {
@@ -629,7 +782,7 @@ function submitLink() {
   if (!request) return
   const safe = safeLink(linkUrl.value)
   if (!safe) {
-    linkError.value = '请输入不包含账号凭据的 HTTPS 地址。'
+    linkError.value = '请输入站内相对地址，或不包含账号凭据的 HTTP/HTTPS 地址。'
     return
   }
   const current = blocks.value[request.index]
@@ -681,15 +834,38 @@ function onSelection(index: number, event: Event) {
   activeIndex.value = index
   const block = blocks.value[index]
   if (!block) return
-  const offset = blocks.value.slice(0, index).reduce((sum, item) => sum + serializeBlock(item).length + 1, 0) + contentSourceOffset(block)
-  emit('selection-change', offset + textarea.selectionStart, offset + textarea.selectionEnd)
+  const selectionStart = Math.min(textarea.selectionStart, textarea.selectionEnd, block.content.length)
+  const selectionEnd = Math.min(Math.max(textarea.selectionStart, textarea.selectionEnd), block.content.length)
+  const blockStart = blocks.value.slice(0, index).reduce((sum, item) => sum + serializeBlock(item).length + 1, 0) + contentSourceOffset(block)
+  const blockEnd = blockStart + block.content.length
+  emit('selection-change', blockStart + selectionStart, blockStart + selectionEnd, {
+    text: textarea.value.slice(selectionStart, selectionEnd),
+    blockIndex: index,
+    blockKind: block.kind,
+    blockStart,
+    blockEnd,
+    selectionStart,
+    selectionEnd,
+  })
+}
+
+function focusBlock(index: number, event: FocusEvent) {
+  activeIndex.value = index
+  selectedIndices.value = []
+  selectionAnchor.value = null
+  onSelection(index, event)
 }
 
 function focusHeading(index: number) {
   activeIndex.value = index
   selectedIndices.value = []
   selectionAnchor.value = null
-  focusAt(index, 0)
+  if (compactOutline.value) {
+    closeOutline(false)
+    void nextTick(() => focusAt(index, 0))
+  } else {
+    focusAt(index, 0)
+  }
 }
 
 function insertText(text: string, replaceSlash = false) {
@@ -743,7 +919,15 @@ function focus() {
   focusAt(index, editorRefs.value[index]?.selectionStart ?? 0)
 }
 
-defineExpose({ insertText, focus, undo, redo })
+defineExpose({ insertText, focus, undo, redo, closeOutline })
+
+function isListBlock(block: EditorBlock) {
+  return block.kind === 'BULLET' || block.kind === 'NUMBERED' || block.kind === 'TODO'
+}
+
+function canChangeIndent(block: EditorBlock, direction: -1 | 1) {
+  return direction > 0 ? block.indent.length < 12 : block.indent.length > 0
+}
 
 function setEditorRef(index: number, value: unknown) {
   editorRefs.value[index] = value instanceof HTMLTextAreaElement ? value : null
@@ -950,9 +1134,11 @@ function normalizeSettings(value: unknown): DocumentSettings {
 }
 
 function safeLink(value: string) {
+  const trimmed = value.trim()
+  if (/^(?:#|\/(?!\/))/.test(trimmed)) return trimmed
   try {
-    const parsed = new URL(value.trim())
-    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return null
+    const parsed = new URL(trimmed)
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return null
     return parsed.toString()
   } catch {
     return null
@@ -982,14 +1168,70 @@ function isBlockKind(value: unknown): value is BlockKind {
     :aria-readonly="readonly"
     @blur.capture="onRootBlur"
   >
-    <v-toolbar class="editor-toolbar" color="surface" density="compact" height="42" flat>
+    <v-toolbar class="editor-toolbar" color="surface" density="compact" height="42" flat :inert="compactOutline && outlineOpen ? true : undefined">
       <div class="editor-toolbar-inner">
-        <v-menu location="bottom start" :close-on-content-click="true">
-          <template #activator="{ props: insertMenuProps }"><v-btn v-bind="insertMenuProps" :disabled="readonly" color="success" icon="mdi-plus-circle" size="small" title="插入内容" aria-label="插入内容" /></template>
-          <v-list class="insert-menu" density="compact" min-width="238">
-            <v-list-subheader>插入内容</v-list-subheader>
-            <v-list-item v-for="command in commands" :key="command.kind" :prepend-icon="command.icon" :title="command.title" :subtitle="command.description" @click="addBlockAfter(activeIndex, command.kind)" />
-          </v-list>
+        <v-menu
+          v-model="insertMenuOpen"
+          location="bottom start"
+          :offset="6"
+          :close-on-content-click="false"
+          content-class="editor-insert-overlay"
+        >
+          <template #activator="{ props: insertMenuProps }">
+            <v-btn
+              v-bind="insertMenuProps"
+              :disabled="readonly"
+              :aria-expanded="insertMenuOpen"
+              color="success"
+              icon="mdi-plus-circle"
+              size="small"
+              title="插入内容"
+              aria-label="插入内容"
+            />
+          </template>
+          <section class="insert-menu" role="dialog" aria-label="插入内容菜单">
+            <header class="insert-menu-header">
+              <strong>插入</strong>
+              <span>也可输入 <kbd>/</kbd> 快速插入</span>
+            </header>
+            <label class="insert-menu-search">
+              <v-icon icon="mdi-magnify" size="17" />
+              <input
+                ref="insertSearchRef"
+                v-model="insertQuery"
+                type="search"
+                autocomplete="off"
+                placeholder="搜索内容类型"
+                aria-label="搜索插入内容"
+                @keydown="onInsertMenuKeydown"
+              >
+              <kbd>Esc</kbd>
+            </label>
+            <div class="insert-menu-group">基础</div>
+            <div v-if="filteredInsertCommands.length" class="insert-menu-options" role="listbox" aria-label="可插入内容">
+              <button
+                v-for="(command, commandIndex) in filteredInsertCommands"
+                :key="command.kind"
+                type="button"
+                class="insert-menu-item"
+                :class="{ active: insertSelection === commandIndex }"
+                :aria-selected="insertSelection === commandIndex"
+                :data-insert-command="command.kind"
+                role="option"
+                @mouseenter="insertSelection = commandIndex"
+                @mousedown.prevent
+                @click="chooseInsertCommand(command.kind)"
+              >
+                <span class="insert-menu-icon"><v-icon :icon="command.icon" size="18" /></span>
+                <span class="insert-menu-copy"><strong>{{ command.title }}</strong><small>{{ command.description }}</small></span>
+              </button>
+            </div>
+            <div v-else class="insert-menu-empty" role="status">
+              <v-icon icon="mdi-magnify-close" size="22" />
+              <span>没有找到相关内容</span>
+              <small>换一个关键词试试</small>
+            </div>
+          </section>
         </v-menu>
         <v-divider class="toolbar-divider" vertical />
         <v-btn :disabled="readonly || !canUndo" icon="mdi-undo" size="small" title="撤销（Ctrl+Z）" aria-label="撤销" @click="undo" />
@@ -1016,7 +1258,7 @@ function isBlockKind(value: unknown): value is BlockKind {
         <v-btn :disabled="readonly" class="d-none d-md-inline-flex" icon="mdi-checkbox-marked-outline" size="small" title="待办" aria-label="待办" @click="setKind('TODO')" />
         <v-btn :disabled="readonly" class="d-none d-md-inline-flex" icon="mdi-format-quote-close" size="small" title="引用" aria-label="引用" @click="setKind('QUOTE')" />
         <v-btn :disabled="readonly" icon="mdi-link-variant" size="small" title="链接（Ctrl+K）" aria-label="插入链接" @click="openLinkDialog()" />
-        <v-menu location="bottom end">
+        <v-menu location="bottom end" :offset="6" content-class="editor-more-overlay">
           <template #activator="{ props: menuProps }"><v-btn v-bind="menuProps" icon="mdi-dots-horizontal" size="small" title="更多格式" aria-label="更多格式" /></template>
           <v-list density="compact" min-width="190">
             <v-list-item prepend-icon="mdi-format-indent-decrease" title="减少缩进" :disabled="readonly || !targetIndices.length" @click="indentSelected(-1)" />
@@ -1037,18 +1279,18 @@ function isBlockKind(value: unknown): value is BlockKind {
           :title="outlineOpen ? '收起大纲' : '展开大纲'"
           :aria-expanded="outlineOpen"
           aria-label="文稿大纲"
-          @click="outlineOpen = !outlineOpen"
+          @click="toggleOutline"
         />
       </div>
     </v-toolbar>
 
     <div class="editor-shell" :class="{ 'with-outline': outlineEnabled && outlineOpen }">
-      <main class="document-canvas" aria-label="块式文稿编辑器">
+      <main class="document-canvas" aria-label="块式文稿编辑器" :inert="compactOutline && outlineOpen ? true : undefined">
         <textarea
           v-if="props.title !== undefined"
           class="document-title-input"
           :value="props.title"
-          :readonly="readonly"
+          :readonly="resolvedTitleReadonly"
           rows="1"
           maxlength="500"
           placeholder="无标题"
@@ -1117,7 +1359,7 @@ function isBlockKind(value: unknown): value is BlockKind {
             :placeholder="index === 0 && !block.content ? placeholder : blockLabel(block)"
             :aria-label="`文稿块 ${index + 1}`"
             spellcheck="true"
-            @focus="activeIndex = index"
+            @focus="focusBlock(index, $event)"
             @input="onBlockInput(index, $event)"
             @keydown="onEditorKeydown(index, $event)"
             @paste="onPaste(index, $event)"
@@ -1129,24 +1371,33 @@ function isBlockKind(value: unknown): value is BlockKind {
             class="slash-menu"
             role="listbox"
             aria-label="斜杠命令"
-            elevation="12"
+            aria-busy="false"
+            elevation="0"
           >
-            <div class="slash-heading">插入块 <kbd>↑↓</kbd><kbd>Enter</kbd></div>
-            <v-list v-if="filteredCommands.length" density="compact" nav>
-              <v-list-item
+            <div class="slash-heading"><span>基础</span><kbd>↑↓</kbd><kbd>Enter</kbd></div>
+            <div v-if="filteredCommands.length" class="slash-options">
+              <button
                 v-for="(command, commandIndex) in filteredCommands"
                 :key="command.kind"
-                :active="slashSelection === commandIndex"
-                :prepend-icon="command.icon"
-                :title="command.title"
-                :subtitle="command.description"
+                type="button"
+                class="slash-command"
+                :class="{ active: slashSelection === commandIndex }"
+                :aria-selected="slashSelection === commandIndex"
                 :data-command="command.kind"
                 role="option"
                 @mousedown.prevent
+                @mouseenter="slashSelection = commandIndex"
                 @click="chooseSlashCommand(command.kind)"
-              />
-            </v-list>
-            <div v-else class="slash-empty">没有匹配的命令</div>
+              >
+                <span class="slash-command-icon"><v-icon :icon="command.icon" size="18" /></span>
+                <span class="slash-command-copy"><strong>{{ command.title }}</strong><small>{{ command.description }}</small></span>
+              </button>
+            </div>
+            <div v-else class="slash-empty" role="status">
+              <v-icon icon="mdi-text-search" size="22" />
+              <span>没有匹配的命令</span>
+              <small>继续输入或按 Esc 关闭</small>
+            </div>
           </v-card>
         </div>
 
@@ -1156,10 +1407,10 @@ function isBlockKind(value: unknown): value is BlockKind {
         </button>
       </main>
 
-      <aside v-if="outlineEnabled && outlineOpen" class="document-outline" aria-label="文稿大纲">
+      <aside v-if="outlineEnabled && outlineOpen" class="document-outline" aria-label="文稿大纲" :role="compactOutline ? 'dialog' : undefined" :aria-modal="compactOutline ? 'true' : undefined">
         <header>
           <span>大纲</span>
-          <v-btn icon="mdi-chevron-right" size="x-small" title="收起大纲" aria-label="收起大纲" @click="outlineOpen = false" />
+          <v-btn ref="outlineCloseRef" icon="mdi-chevron-right" size="x-small" title="收起大纲" aria-label="收起大纲" @click="closeOutline()" />
         </header>
         <nav>
           <span v-if="!headings.length" class="outline-empty">暂无标题</span>
@@ -1181,32 +1432,55 @@ function isBlockKind(value: unknown): value is BlockKind {
         class="outline-restore d-none d-lg-flex"
         aria-label="展开大纲"
         title="展开大纲"
-        @click="outlineOpen = true"
+        @click="openOutline"
       >
         <v-icon icon="mdi-format-list-bulleted-square" size="19" />
       </button>
     </div>
 
-    <v-dialog :model-value="Boolean(linkRequest)" max-width="520" @update:model-value="value => { if (!value) linkRequest = null }">
-      <v-card>
-        <v-card-title>插入链接</v-card-title>
-        <v-card-text class="pb-0">
-          <v-text-field v-model="linkLabel" label="显示文字" autofocus />
+    <v-dialog
+      :model-value="Boolean(linkRequest)"
+      max-width="480"
+      content-class="editor-link-overlay"
+      @update:model-value="value => { if (!value) linkRequest = null }"
+    >
+      <v-card class="link-dialog" rounded="lg" elevation="12">
+        <header class="link-dialog-header">
+          <strong>插入链接</strong>
+          <v-btn icon="mdi-close" size="small" variant="text" aria-label="关闭链接弹窗" title="关闭" @click="linkRequest = null" />
+        </header>
+        <div class="link-dialog-body">
+          <label class="link-field-label" for="document-link-label">显示文字</label>
           <v-text-field
+            id="document-link-label"
+            v-model="linkLabel"
+            class="link-field"
+            density="compact"
+            variant="outlined"
+            hide-details
+            autofocus
+            placeholder="输入要显示的文字"
+            aria-label="显示文字"
+          />
+          <label class="link-field-label" for="document-link-url">链接地址</label>
+          <v-text-field
+            id="document-link-url"
             v-model="linkUrl"
-            class="mt-3"
-            label="链接地址"
+            class="link-field"
+            density="compact"
+            variant="outlined"
             placeholder="https://example.com"
             :error-messages="linkError"
+            aria-label="链接地址"
+            @update:model-value="linkError = ''"
             @keydown.enter.prevent="submitLink"
           />
-          <p class="link-hint">仅支持不包含用户名或密码的 HTTPS 地址。</p>
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <v-btn @click="linkRequest = null">取消</v-btn>
-          <v-btn color="primary" variant="flat" @click="submitLink">插入链接</v-btn>
-        </v-card-actions>
+          <p class="link-hint"><v-icon icon="mdi-shield-check-outline" size="14" />支持站内相对地址及不含账号凭据的 HTTP/HTTPS 地址</p>
+        </div>
+        <footer class="link-dialog-actions">
+          <v-btn variant="text" @click="linkRequest = null">取消</v-btn>
+          <v-btn color="primary" variant="flat" :disabled="!linkUrl.trim()" @click="submitLink">插入链接</v-btn>
+        </footer>
       </v-card>
     </v-dialog>
   </section>
@@ -1219,10 +1493,10 @@ function isBlockKind(value: unknown): value is BlockKind {
   --editor-block-gap: 2px;
   display: flex;
   width: 100%;
-  height: 100%;
-  min-height: 0;
+  height: auto;
+  min-height: calc(100dvh - 52px);
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
   background: #fff;
   color: #262626;
 }
@@ -1235,9 +1509,13 @@ function isBlockKind(value: unknown): value is BlockKind {
 .document-editor.document-font-sans .block-input { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; }
 
 .editor-toolbar {
+  position: sticky;
+  top: 52px;
   z-index: 24;
+  width: calc(100% - 15px) !important;
   min-height: 42px !important;
   flex: 0 0 42px;
+  margin-right: 15px;
   border-bottom: 1px solid #f0f0f0;
   background: #fff !important;
   box-shadow: none !important;
@@ -1245,11 +1523,12 @@ function isBlockKind(value: unknown): value is BlockKind {
 
 .editor-toolbar-inner {
   display: flex;
-  width: min(1240px, calc(100% - 24px));
+  width: calc(100% - 44px);
   height: 42px;
   min-width: 0;
   align-items: center;
-  margin: 0 auto;
+  margin: 0;
+  padding-left: 8px;
   overflow: hidden;
 }
 .editor-toolbar :deep(.v-btn) {
@@ -1257,9 +1536,11 @@ function isBlockKind(value: unknown): value is BlockKind {
   min-width: 30px;
   height: 30px;
   color: #585a59;
+  border-radius: 4px;
 }
 .editor-toolbar :deep(.v-btn--disabled) { opacity: .28; }
 .editor-toolbar :deep(.v-btn__overlay) { background: #e7e9e8; }
+.editor-toolbar :deep(.v-btn:focus-visible) { outline: 2px solid rgba(47,111,235,.32); outline-offset: -1px; }
 .editor-toolbar :deep(.v-btn.text-success),
 .editor-toolbar :deep(.text-success) { color: #00b96b !important; }
 .toolbar-divider { height: 18px; margin: 0 7px; color: #e7e9e8; }
@@ -1269,16 +1550,147 @@ function isBlockKind(value: unknown): value is BlockKind {
 .kind-select :deep(.v-list-item__prepend) { display: none; }
 .selection-summary { margin-right: 8px; color: #8a8f8d; font-size: 12px; }
 
+:global(.editor-insert-overlay) {
+  width: 316px !important;
+  overflow: hidden;
+  border: 1px solid #e6e8e7;
+  border-radius: 8px !important;
+  background: #fff;
+  box-shadow: 0 8px 26px rgba(31,35,33,.14) !important;
+}
+.insert-menu {
+  display: block;
+  width: 316px;
+  padding: 8px;
+  background: #fff;
+  color: #262626;
+}
+.insert-menu-header {
+  display: flex;
+  height: 30px;
+  align-items: center;
+  padding: 0 6px;
+}
+.insert-menu-header strong { font-size: 14px; font-weight: 600; }
+.insert-menu-header span { margin-left: auto; color: #8a8f8d; font-size: 11px; }
+.insert-menu kbd {
+  display: inline-grid;
+  min-width: 18px;
+  height: 18px;
+  place-items: center;
+  padding: 0 4px;
+  border: 1px solid #e1e4e2;
+  border-radius: 4px;
+  background: #f7f8f7;
+  color: #8a8f8d;
+  font: 11px/16px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  box-shadow: 0 1px 0 rgba(31,35,33,.04);
+}
+.insert-menu-search {
+  display: flex;
+  height: 34px;
+  align-items: center;
+  gap: 7px;
+  margin: 4px 4px 6px;
+  padding: 0 9px;
+  border: 1px solid #e1e4e2;
+  border-radius: 5px;
+  background: #fff;
+  color: #8a8f8d;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.insert-menu-search:focus-within { border-color: #2f6feb; box-shadow: 0 0 0 2px rgba(47,111,235,.1); }
+.insert-menu-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #262626;
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+}
+.insert-menu-search input::placeholder { color: #b5b9b7; }
+.insert-menu-search input::-webkit-search-cancel-button { display: none; }
+.insert-menu-group {
+  height: 26px;
+  padding: 7px 8px 4px;
+  color: #8a8f8d;
+  font-size: 11px;
+  font-weight: 500;
+}
+.insert-menu-options {
+  display: flex;
+  max-height: min(360px, calc(100dvh - 220px));
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.insert-menu-item {
+  display: grid;
+  width: 100%;
+  min-height: 44px;
+  grid-template-columns: 32px minmax(0,1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #262626;
+  text-align: left;
+  cursor: pointer;
+}
+.insert-menu-item:hover,
+.insert-menu-item.active { background: #f1f3f2; }
+.insert-menu-item:focus-visible { outline: 2px solid rgba(47,111,235,.32); outline-offset: -2px; }
+.insert-menu-icon,
+.slash-command-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid #e5e7e6;
+  border-radius: 5px;
+  background: #fff;
+  color: #585a59;
+}
+.insert-menu-copy,
+.slash-command-copy { display: flex; min-width: 0; flex-direction: column; }
+.insert-menu-copy strong,
+.slash-command-copy strong { font-size: 13px; font-weight: 500; line-height: 18px; }
+.insert-menu-copy small,
+.slash-command-copy small { overflow: hidden; color: #8a8f8d; font-size: 11px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
+.insert-menu-empty,
+.slash-empty {
+  display: flex;
+  min-height: 104px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 5px;
+  color: #8a8f8d;
+  font-size: 13px;
+}
+.insert-menu-empty small,
+.slash-empty small { color: #b0b4b2; font-size: 11px; }
+:global(.editor-more-overlay) {
+  overflow: hidden;
+  border: 1px solid #e6e8e7;
+  border-radius: 8px !important;
+  box-shadow: 0 8px 24px rgba(31,35,33,.13) !important;
+}
+:global(.editor-more-overlay .v-list) { padding: 5px; }
+:global(.editor-more-overlay .v-list-item) { min-height: 36px; border-radius: 5px; font-size: 13px; }
+
 .editor-shell {
   position: relative;
   display: block;
   width: 100%;
-  min-height: 0;
-  flex: 1 1 auto;
+  min-height: calc(100dvh - 94px);
+  flex: 0 0 auto;
   overflow-x: hidden;
-  overflow-y: auto;
+  overflow-y: visible;
   padding: 52px 0 120px;
-  scrollbar-gutter: stable;
 }
 
 .document-width-wide .editor-shell { width: 100%; }
@@ -1291,6 +1703,13 @@ function isBlockKind(value: unknown): value is BlockKind {
   margin: 0 auto;
 }
 .document-width-wide .document-canvas { width: 900px; }
+.editor-shell.with-outline .document-canvas {
+  width: min(750px, calc(100% - 445px));
+  max-width: calc(100% - 445px);
+  margin-right: 0;
+  margin-left: 70px;
+}
+.document-width-wide .editor-shell.with-outline .document-canvas { width: min(900px, calc(100% - 445px)); }
 .document-title-input {
   display: block;
   width: 100%;
@@ -1355,7 +1774,7 @@ function isBlockKind(value: unknown): value is BlockKind {
   transition: opacity 100ms ease;
 }
 .document-block:hover .block-rail,
-.document-block.active .block-rail,
+.document-block:focus-within .block-rail,
 .document-block.selected .block-rail { opacity: 1; }
 .block-handle,
 .block-add,
@@ -1381,6 +1800,10 @@ function isBlockKind(value: unknown): value is BlockKind {
 .block-add:hover { background: #f0f1f0; color: #262626; }
 .block-handle:disabled,
 .block-add:disabled { cursor: default; opacity: .35; }
+.block-handle:focus-visible,
+.block-add:focus-visible,
+.todo-check:focus-visible,
+.append-block:focus-visible { outline: 2px solid rgba(47,111,235,.35); outline-offset: 1px; }
 
 .block-glyph {
   min-height: 34px;
@@ -1449,27 +1872,49 @@ function isBlockKind(value: unknown): value is BlockKind {
 
 .slash-menu {
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + 6px);
   left: 0;
-  z-index: 40;
-  width: min(360px, calc(100vw - 64px));
-  max-height: 410px;
-  overflow: auto;
-  border: 1px solid #e7e9e8;
+  z-index: 42;
+  width: min(320px, calc(100vw - 64px));
+  max-height: min(404px, calc(100dvh - 160px));
+  overflow: hidden;
+  padding: 6px;
+  border: 1px solid #e6e8e7;
   border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 26px rgba(31,35,33,.14) !important;
 }
 .slash-heading {
   display: flex;
+  height: 28px;
   align-items: center;
   gap: 5px;
-  padding: 12px 14px 6px;
-  color: rgb(var(--v-theme-on-surface-variant));
-  font-size: 12px;
-  font-weight: 650;
+  padding: 0 7px;
+  color: #8a8f8d;
+  font-size: 11px;
+  font-weight: 500;
 }
-.slash-heading kbd { padding: 1px 4px; border-radius: 4px; background: rgba(var(--v-theme-on-surface), .07); font: inherit; }
+.slash-heading kbd { display: inline-grid; min-width: 20px; height: 18px; place-items: center; padding: 0 4px; border: 1px solid #e1e4e2; border-radius: 4px; background: #f7f8f7; color: #8a8f8d; font: 10px/16px inherit; }
 .slash-heading kbd:first-of-type { margin-left: auto; }
-.slash-empty { padding: 28px 16px; color: rgb(var(--v-theme-on-surface-variant)); text-align: center; }
+.slash-options { max-height: 356px; overflow-y: auto; overscroll-behavior: contain; }
+.slash-command {
+  display: grid;
+  width: 100%;
+  min-height: 44px;
+  grid-template-columns: 32px minmax(0,1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #262626;
+  text-align: left;
+  cursor: pointer;
+}
+.slash-command:hover,
+.slash-command.active { background: #f1f3f2; }
+.slash-command:focus-visible { outline: 2px solid rgba(47,111,235,.32); outline-offset: -2px; }
 
 .append-block {
   display: flex;
@@ -1488,16 +1933,17 @@ function isBlockKind(value: unknown): value is BlockKind {
 .document-outline {
   position: fixed;
   top: 94px;
-  right: 0;
+  right: 61px;
   bottom: 0;
   z-index: 18;
-  width: 196px;
+  width: 305px;
   overflow: auto;
-  border-left: 1px solid #f0f0f0;
+  border-left: 0;
   background: rgba(255,255,255,.98);
-  padding: 15px 12px 32px;
+  padding: 35px 28px 32px;
 }
-.document-outline header { display: flex; align-items: center; justify-content: space-between; height: 28px; margin-bottom: 7px; color: #585a59; font-size: 13px; font-weight: 600; }
+.document-outline header { display: flex; align-items: center; justify-content: flex-start; height: 30px; margin-bottom: 7px; color: #262626; font-size: 14px; font-weight: 600; }
+.document-outline header :deep(.v-btn) { margin-left: 8px; }
 .document-outline nav { display: flex; flex-direction: column; gap: 2px; }
 .outline-empty { padding: 7px 8px; color: #b7bbba; font-size: 12px; }
 .document-outline nav button {
@@ -1517,7 +1963,7 @@ function isBlockKind(value: unknown): value is BlockKind {
 .outline-restore {
   position: fixed;
   top: 108px;
-  right: 14px;
+  right: 75px;
   z-index: 19;
   width: 34px;
   height: 34px;
@@ -1531,10 +1977,50 @@ function isBlockKind(value: unknown): value is BlockKind {
 }
 .outline-restore:hover { background: #f0f1f0; color: #262626; }
 
-.link-hint { margin: 0 0 12px; color: rgb(var(--v-theme-on-surface-variant)); font-size: 12px; }
+:global(.editor-link-overlay) { margin: 24px; }
+.link-dialog {
+  overflow: hidden;
+  border: 1px solid #e4e7e5;
+  background: #fff;
+  box-shadow: 0 16px 44px rgba(31,35,33,.18) !important;
+}
+.link-dialog-header {
+  display: flex;
+  height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px 0 20px;
+  border-bottom: 1px solid #eff0ef;
+}
+.link-dialog-header strong { color: #262626; font-size: 16px; font-weight: 600; }
+.link-dialog-header :deep(.v-btn) { width: 30px; min-width: 30px; height: 30px; color: #8a8f8d; }
+.link-dialog-body { padding: 18px 20px 4px; }
+.link-field-label { display: block; margin: 0 0 7px; color: #585a59; font-size: 13px; font-weight: 500; }
+.link-field { margin-bottom: 14px; }
+.link-field :deep(.v-field) { min-height: 36px; border-radius: 5px; font-size: 13px; }
+.link-field :deep(.v-field__input) { min-height: 36px; padding-top: 7px; padding-bottom: 7px; }
+.link-field :deep(.v-field__outline__start) { border-radius: 5px 0 0 5px; }
+.link-field :deep(.v-field__outline__end) { border-radius: 0 5px 5px 0; }
+.link-field :deep(.v-messages) { min-height: 18px; padding-top: 3px; font-size: 11px; }
+.link-hint { display: flex; align-items: center; gap: 5px; margin: -4px 0 12px; color: #8a8f8d; font-size: 11px; }
+.link-dialog-actions {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 20px;
+  border-top: 1px solid #eff0ef;
+}
+.link-dialog-actions :deep(.v-btn) { min-width: 64px; height: 32px; border-radius: 5px; font-size: 13px; }
+.link-dialog-actions :deep(.v-btn--disabled) { opacity: .42; }
 
-@media (max-width: 1024px) {
-  .document-outline { width: 184px; box-shadow: -8px 0 30px rgba(0,0,0,.05); }
+@media (max-width: 1100px) {
+  .editor-toolbar { margin-right: 0; }
+  .editor-toolbar-inner { width: calc(100% - 8px); }
+  .editor-shell.with-outline .document-canvas,
+  .document-width-wide .editor-shell.with-outline .document-canvas { width: 750px; max-width: calc(100% - 48px); margin: 0 auto; }
+  .document-outline { right: 0; width: min(82vw,305px); box-shadow: -8px 0 30px rgba(0,0,0,.06); }
 }
 
 @media (max-width: 600px) {

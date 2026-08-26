@@ -1,8 +1,11 @@
 import { defineConfig } from 'vitest/config'
+import { loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vuetify from 'vite-plugin-vuetify'
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const apiProxy = loadEnv(mode, '.', '').VITE_API_PROXY || 'http://127.0.0.1:8080'
+  return {
   plugins: [vue(), vuetify({ autoImport: true })],
   test: {
     environment: 'jsdom',
@@ -14,8 +17,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://127.0.0.1:8080',
-      '/actuator': 'http://127.0.0.1:8080',
+      '/api': apiProxy,
+      '/actuator': apiProxy,
     },
   },
   build: {
@@ -23,4 +26,5 @@ export default defineConfig({
     // web image. Enable them only in a private debugging build if needed.
     sourcemap: false,
   },
+  }
 })

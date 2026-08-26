@@ -1,10 +1,28 @@
 import { mount, type VueWrapper } from '@vue/test-utils'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import { vuetify } from '../../plugins/vuetify'
 import DocumentEditor from './DocumentEditor.vue'
 
 const mounted: VueWrapper[] = []
+
+beforeEach(() => {
+  stubViewport(1280)
+  vi.stubGlobal('visualViewport', {
+    width: 1024,
+    height: 768,
+    offsetLeft: 0,
+    offsetTop: 0,
+    scale: 1,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  })
+  vi.stubGlobal('ResizeObserver', class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  })
+})
 
 afterEach(() => {
   for (const wrapper of mounted.splice(0)) wrapper.unmount()
@@ -13,6 +31,35 @@ afterEach(() => {
 })
 
 describe('DocumentEditor', () => {
+  it('focuses the compact outline, makes the editor inert, and restores focus after Escape or external close', async () => {
+    stubViewport(768)
+    const wrapper = mountEditor('# 平板标题', { showOutline: true })
+
+    expect(wrapper.find('aside[aria-label="文稿大纲"]').exists()).toBe(false)
+    const trigger = wrapper.get<HTMLButtonElement>('button[aria-label="文稿大纲"]')
+    trigger.element.focus()
+    await trigger.trigger('click')
+    await nextTick()
+    expect(wrapper.get('aside[aria-label="文稿大纲"]').attributes('aria-modal')).toBe('true')
+    expect(document.activeElement).toBe(wrapper.get('button[aria-label="收起大纲"]').element)
+    expect(wrapper.get('.editor-toolbar').attributes('inert')).toBeDefined()
+    expect(wrapper.get('.document-canvas').attributes('inert')).toBeDefined()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await nextTick()
+    expect(wrapper.find('aside[aria-label="文稿大纲"]').exists()).toBe(false)
+    expect(document.activeElement).toBe(trigger.element)
+    expect(wrapper.get('.editor-toolbar').attributes('inert')).toBeUndefined()
+    expect(wrapper.get('.document-canvas').attributes('inert')).toBeUndefined()
+
+    await trigger.trigger('click')
+    await nextTick()
+    ;(wrapper.vm as unknown as { closeOutline: () => void }).closeOutline()
+    await nextTick()
+    expect(wrapper.find('aside[aria-label="文稿大纲"]').exists()).toBe(false)
+    expect(document.activeElement).toBe(trigger.element)
+  })
+
   it('initializes and edits a document when randomUUID is unavailable on HTTP', async () => {
     vi.stubGlobal('crypto', { getRandomValues: (bytes: Uint8Array) => bytes.fill(7) })
     const wrapper = mountEditor('')
@@ -36,26 +83,116 @@ describe('DocumentEditor', () => {
     expect(lastUpdate(wrapper)).toBe('# 新标题\n正文')
   })
 
+  it('emits source offsets, selected text, and block metadata without changing the positional callback contract', async () => {
+    const wrapper = mountEditor('# 标题\n- 列表项\n```ts\nconst answer = 42\n```')
+    const inputs = wrapper.findAll<HTMLTextAreaElement>('textarea.block-input')
+    const list = inputs[1]!
+    list.element.focus()
+    list.element.setSelectionRange(0, 3)
+    await list.trigger('select')
+
+    expect(wrapper.emitted('selection-change')?.at(-1)).toEqual([7, 10, {
+      text: '列表项',
+      blockIndex: 1,
+      blockKind: 'BULLET',
+      blockStart: 7,
+      blockEnd: 10,
+      selectionStart: 0,
+      selectionEnd: 3,
+    }])
+
+    const code = inputs[2]!
+    code.element.focus()
+    code.element.setSelectionRange(6, 12)
+    await code.trigger('select')
+    expect(wrapper.emitted('selection-change')?.at(-1)?.slice(0, 3)).toEqual([23, 29, expect.objectContaining({
+      text: 'answer',
+      blockIndex: 2,
+      blockKind: 'CODE',
+      blockStart: 17,
+      blockEnd: 34,
+    })])
+  })
+
   it('splits, merges, indents and moves blocks with keyboard-compatible operations', async () => {
-    const wrapper = mountEditor('第一段\n第二段')
+    const wrapper = mountEditor('第一段\n- 第二段')
     const first = wrapper.findAll<HTMLTextAreaElement>('textarea.block-input')[0]!
     first.element.focus()
     first.element.setSelectionRange(2, 2)
     await first.trigger('keydown', { key: 'Enter' })
     await nextTick()
 
-    expect(lastUpdate(wrapper)).toBe('第一\n段\n第二段')
+    expect(lastUpdate(wrapper)).toBe('第一\n段\n- 第二段')
     const splitMiddle = wrapper.findAll<HTMLTextAreaElement>('textarea.block-input')[1]!
     splitMiddle.element.setSelectionRange(0, 0)
     await splitMiddle.trigger('keydown', { key: 'Backspace' })
-    expect(lastUpdate(wrapper)).toBe('第一段\n第二段')
+    expect(lastUpdate(wrapper)).toBe('第一段\n- 第二段')
 
     const second = wrapper.findAll<HTMLTextAreaElement>('textarea.block-input')[1]!
     second.element.focus()
     await second.trigger('keydown', { key: 'Tab' })
-    expect(lastUpdate(wrapper)).toBe('第一段\n  第二段')
+    expect(lastUpdate(wrapper)).toBe('第一段\n  - 第二段')
     await second.trigger('keydown', { key: 'ArrowUp', altKey: true })
-    expect(lastUpdate(wrapper)).toBe('  第二段\n第一段')
+    expect(lastUpdate(wrapper)).toBe('  - 第二段\n第一段')
+  })
+
+  it('keeps Shift+Enter as a soft break inside the current block', async () => {
+    const wrapper = mountEditor('第一段')
+    const input = wrapper.get<HTMLTextAreaElement>('textarea.block-input')
+    input.element.focus()
+    input.element.setSelectionRange(2, 2)
+    await input.trigger('keydown', { key: 'Enter', shiftKey: true })
+    await nextTick()
+
+    expect(lastUpdate(wrapper)).toBe(`第一\u2028段`)
+    expect(wrapper.findAll('textarea.block-input')).toHaveLength(1)
+  })
+
+  it('moves block actions to the textarea that receives focus and leaves readonly Tab navigation alone', async () => {
+    const wrapper = mountEditor('甲\n乙')
+    await wrapper.get('button[aria-label="选择并拖动第 1 块"]').trigger('click')
+    expect(wrapper.findAll('.document-block')[0]!.classes()).toContain('selected')
+
+    wrapper.findAll<HTMLTextAreaElement>('textarea.block-input')[1]!.element.focus()
+    await nextTick()
+    expect(wrapper.findAll('.document-block')[0]!.classes()).not.toContain('selected')
+    expect(wrapper.findAll('.document-block')[1]!.classes()).toContain('active')
+
+    const readonly = mountEditor('只读', { readonly: true })
+    const input = readonly.get<HTMLTextAreaElement>('textarea.block-input')
+    const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    expect(input.element.dispatchEvent(event)).toBe(true)
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it('lets paragraph Tab navigation and list indentation boundaries escape the editor', async () => {
+    const paragraph = mountEditor('普通段落')
+    const paragraphInput = paragraph.get<HTMLTextAreaElement>('textarea.block-input')
+    const paragraphTab = dispatchKey(paragraphInput.element, 'Tab')
+    const paragraphBackTab = dispatchKey(paragraphInput.element, 'Tab', { shiftKey: true })
+    expect(paragraphTab.defaultPrevented).toBe(false)
+    expect(paragraphBackTab.defaultPrevented).toBe(false)
+    expect(lastUpdate(paragraph)).toBeUndefined()
+
+    const list = mountEditor('- 列表项')
+    const listInput = list.get<HTMLTextAreaElement>('textarea.block-input')
+    const indent = dispatchKey(listInput.element, 'Tab')
+    await nextTick()
+    expect(indent.defaultPrevented).toBe(true)
+    expect(lastUpdate(list)).toBe('  - 列表项')
+
+    const outdent = dispatchKey(listInput.element, 'Tab', { shiftKey: true })
+    await nextTick()
+    expect(outdent.defaultPrevented).toBe(true)
+    expect(lastUpdate(list)).toBe('- 列表项')
+
+    const outdentBoundary = dispatchKey(listInput.element, 'Tab', { shiftKey: true })
+    expect(outdentBoundary.defaultPrevented).toBe(false)
+
+    const maximum = mountEditor(`${' '.repeat(12)}- 最深列表项`)
+    const maximumTab = dispatchKey(maximum.get<HTMLTextAreaElement>('textarea.block-input').element, 'Tab')
+    expect(maximumTab.defaultPrevented).toBe(false)
+    expect(lastUpdate(maximum)).toBeUndefined()
   })
 
   it('supports inline formatting and grouped undo/redo', async () => {
@@ -85,6 +222,98 @@ describe('DocumentEditor', () => {
 
     expect(lastUpdate(wrapper)).toBe('# ')
     expect(wrapper.find('[role="listbox"]').exists()).toBe(false)
+  })
+
+  it('supports keyboard navigation and an explicit empty state in the slash menu', async () => {
+    const wrapper = mountEditor('')
+    const input = wrapper.get<HTMLTextAreaElement>('textarea.block-input')
+
+    await input.setValue('/not-a-command')
+    expect(wrapper.get('.slash-empty').text()).toContain('没有匹配的命令')
+    expect(wrapper.get('.slash-empty').text()).toContain('Esc')
+
+    await input.trigger('keydown', { key: 'Escape' })
+    expect(wrapper.find('[role="listbox"]').exists()).toBe(false)
+
+    await input.setValue('/')
+    await input.trigger('keydown', { key: 'ArrowDown' })
+    expect(wrapper.get('[data-command="H1"]').attributes('aria-selected')).toBe('true')
+    await input.trigger('keydown', { key: 'Enter' })
+    expect(lastUpdate(wrapper)).toBe('# ')
+  })
+
+  it('opens a searchable insert menu and inserts the keyboard-selected block', async () => {
+    const wrapper = mountEditor('正文')
+    await wrapper.get('button[aria-label="插入内容"]').trigger('click')
+    await flushOverlay()
+
+    const menu = document.querySelector<HTMLElement>('.insert-menu')
+    expect(menu).not.toBeNull()
+    expect(menu?.getAttribute('aria-label')).toBe('插入内容菜单')
+    const search = menu?.querySelector<HTMLInputElement>('input[aria-label="搜索插入内容"]')
+    expect(document.activeElement).toBe(search)
+
+    if (!search) throw new Error('insert menu search input missing')
+    search.value = 'does-not-exist'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(document.querySelector('.insert-menu-empty')?.textContent).toContain('没有找到相关内容')
+
+    search.value = ''
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    await nextTick()
+    expect(document.querySelector('[data-insert-command="H1"]')?.getAttribute('aria-selected')).toBe('true')
+    search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await nextTick()
+
+    expect(lastUpdate(wrapper)).toBe('正文\n# ')
+    expect(wrapper.get('button[aria-label="插入内容"]').attributes('aria-expanded')).toBe('false')
+  })
+
+  it('keeps insert and link actions disabled in readonly mode', async () => {
+    const wrapper = mountEditor('只读正文', { readonly: true })
+    const insert = wrapper.get('button[aria-label="插入内容"]')
+    const link = wrapper.get('button[aria-label="插入链接"]')
+
+    expect(insert.attributes('disabled')).toBeDefined()
+    expect(link.attributes('disabled')).toBeDefined()
+    await insert.trigger('click')
+    await flushOverlay()
+    expect(document.querySelector('.insert-menu')).toBeNull()
+  })
+
+  it('validates and inserts a safe HTTP or HTTPS link without losing the selected label', async () => {
+    const wrapper = mountEditor('链接文本')
+    const input = wrapper.get<HTMLTextAreaElement>('textarea.block-input')
+    input.element.focus()
+    input.element.setSelectionRange(0, 4)
+    await input.trigger('keydown', { key: 'k', ctrlKey: true })
+    await flushOverlay()
+
+    const dialog = document.querySelector<HTMLElement>('.link-dialog')
+    expect(dialog).not.toBeNull()
+    const label = dialog?.querySelector<HTMLInputElement>('input[aria-label="显示文字"]')
+    const url = dialog?.querySelector<HTMLInputElement>('input[aria-label="链接地址"]')
+    const submit = Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) => button.textContent?.includes('插入链接'))
+    expect(label?.value).toBe('链接文本')
+    expect(submit?.disabled).toBe(true)
+
+    if (!url || !submit) throw new Error('link dialog controls missing')
+    url.value = 'javascript:alert(1)'
+    url.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    submit.click()
+    await nextTick()
+    expect(dialog?.textContent).toContain('HTTP/HTTPS')
+
+    url.value = 'http://docs.example.test/path'
+    url.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    submit.click()
+    await nextTick()
+    expect(lastUpdate(wrapper)).toBe('[链接文本](http://docs.example.test/path)')
   })
 
   it('pastes multiple Markdown lines as independently editable blocks', async () => {
@@ -180,6 +409,24 @@ describe('DocumentEditor', () => {
   })
 })
 
+function stubViewport(width: number) {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: width })
+  vi.stubGlobal('matchMedia', vi.fn((query: string) => {
+    const maximum = /max-width:\s*(\d+)px/.exec(query)?.[1]
+    const matches = maximum ? width <= Number(maximum) : false
+    return {
+      matches,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }
+  }))
+}
+
 function mountEditor(modelValue: string, extraProps: Record<string, unknown> = {}) {
   let wrapper!: VueWrapper
   wrapper = mount(DocumentEditor, {
@@ -198,4 +445,16 @@ function mountEditor(modelValue: string, extraProps: Record<string, unknown> = {
 
 function lastUpdate(wrapper: VueWrapper) {
   return wrapper.emitted('update:modelValue')?.at(-1)?.[0]
+}
+
+function dispatchKey(element: HTMLElement, key: string, options: KeyboardEventInit = {}) {
+  const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...options })
+  element.dispatchEvent(event)
+  return event
+}
+
+async function flushOverlay() {
+  await nextTick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  await nextTick()
 }

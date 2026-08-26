@@ -16,6 +16,12 @@ import {
   type KnowledgeBaseWatermark,
 } from '../../utils/presentation'
 import { createUuid } from '../../utils/uuid'
+import {
+  acquireKnowledgeBaseMutation,
+  knowledgeBaseLifecycleMutation,
+  knowledgeBaseMutationInFlight,
+  releaseKnowledgeBaseMutation,
+} from '../../utils/knowledgeBaseMutationLocks'
 
 interface Member {
   userId: string
@@ -23,9 +29,19 @@ interface Member {
   displayName: string | null
   role: 'READER' | 'EDITOR' | 'MANAGER'
 }
-interface TeamMember { userId: string; role: 'MEMBER' | 'MANAGER' }
-interface MergePlan { fingerprint: string; pageCount: number; catalogNodeCount: number; pathConflicts: Array<unknown>; warnings: string[] }
+interface AuthorizationDecision { capabilities: string[] }
+interface MergePath { pageId: string; title: string; originalPath: string; resolvedPath: string; renamed: boolean }
+interface MergePlan {
+  sourceKnowledgeBaseId: string
+  targetKnowledgeBaseId: string
+  fingerprint: string
+  pageCount: number
+  catalogNodeCount: number
+  paths: MergePath[]
+  warnings: string[]
+}
 interface OwnerTarget { value: string; title: string; subtitle: string; icon: string }
+type SettingsTab = 'general' | 'appearance' | 'members' | 'sharing' | 'ownership' | 'danger'
 interface SettingsForm {
   name: string
   slug: string
@@ -82,18 +98,23 @@ const pages = ref<Page[]>([])
 const members = ref<Member[]>([])
 const workspaceMembers = ref<WorkspaceMember[]>([])
 const teams = ref<Team[]>([])
-const teamRoles = ref<Record<string, TeamMember['role'] | undefined>>({})
 const allKbs = ref<KnowledgeBase[]>([])
-const tab = ref('general')
+const tab = ref<SettingsTab>('general')
 const loading = ref(false)
 const saving = ref(false)
+const memberWorking = ref(false)
 const transferring = ref(false)
+const ownershipPermissionsLoading = ref(false)
+const canTransferKnowledgeBase = ref(false)
+const manageableOwnerValues = ref<Set<string>>(new Set())
 const lifecycleWorking = ref<'' | 'plan' | 'merge' | 'archive'>('')
 const error = ref('')
 const candidate = ref('')
 const memberRole = ref<Member['role']>('READER')
 const targetOwner = ref('')
 const transferDialog = ref(false)
+const pendingTransferTarget = ref<OwnerTarget | null>(null)
+const transferError = ref('')
 const mergeTarget = ref('')
 const mergePlan = ref<MergePlan | null>(null)
 const confirmName = ref('')
@@ -108,15 +129,15 @@ const watermark = reactive<KnowledgeBaseWatermark>(parseKnowledgeBaseWatermark('
 const catalog = reactive<KnowledgeBaseCatalogDisplay>(parseKnowledgeBaseCatalogDisplay('{}'))
 
 const workspace = computed(() => session.workspaces.find((item) => item.id === kb.value?.workspaceId) ?? null)
-const workspaceCanManage = computed(() => ['OWNER', 'ADMIN'].includes(workspace.value?.membershipRole ?? ''))
+const activeKnowledgeBase = computed(() => kb.value?.id === knowledgeBaseId.value ? kb.value : null)
 const currentOwnerValue = computed(() => kb.value ? `${kb.value.ownerType}:${kb.value.ownerId}` : '')
 const currentOwnerTeam = computed(() => teams.value.find((team) => team.id === kb.value?.ownerId) ?? null)
 const currentOwnerPerson = computed(() => workspaceMembers.value.find((person) => person.userId === kb.value?.ownerId) ?? null)
 const currentOwnerTitle = computed(() => {
   if (!kb.value) return '正在读取归属信息'
   if (kb.value.ownerType === 'PERSONAL') {
-    if (kb.value.ownerId === session.user?.userId) return '归你个人管理'
-    return `个人 · ${currentOwnerPerson.value?.displayName || currentOwnerPerson.value?.email || '空间成员'}`
+    const person = kb.value.ownerId === session.user?.userId ? session.user : currentOwnerPerson.value
+    return `个人 · ${person?.displayName || person?.email || '空间成员'}`
   }
   if (kb.value.ownerType === 'TEAM') return currentOwnerTeam.value ? `团队 · ${currentOwnerTeam.value.name}` : '团队管理'
   if (kb.value.ownerType === 'WORKSPACE') return `空间 · ${workspace.value?.name ?? '当前空间'}`
@@ -129,7 +150,7 @@ const currentOwnerDescription = computed(() => {
   return '服务端返回了无法识别的归属类型。'
 })
 const ownerTargets = computed<OwnerTarget[]>(() => {
-  if (!kb.value) return []
+  if (!kb.value || !canTransferKnowledgeBase.value) return []
   const values: OwnerTarget[] = []
   if (session.user && currentOwnerValue.value !== `PERSONAL:${session.user.userId}`) {
     values.push({
@@ -139,7 +160,7 @@ const ownerTargets = computed<OwnerTarget[]>(() => {
       icon: 'mdi-account-outline',
     })
   }
-  if (workspaceCanManage.value && currentOwnerValue.value !== `WORKSPACE:${kb.value.workspaceId}`) {
+  if (manageableOwnerValues.value.has(`WORKSPACE:${kb.value.workspaceId}`) && currentOwnerValue.value !== `WORKSPACE:${kb.value.workspaceId}`) {
     values.push({
       value: `WORKSPACE:${kb.value.workspaceId}`,
       title: `空间 · ${workspace.value?.name ?? '当前空间'}`,
@@ -148,7 +169,7 @@ const ownerTargets = computed<OwnerTarget[]>(() => {
     })
   }
   for (const team of teams.value) {
-    if ((workspaceCanManage.value || teamRoles.value[team.id] === 'MANAGER') && currentOwnerValue.value !== `TEAM:${team.id}`) {
+    if (manageableOwnerValues.value.has(`TEAM:${team.id}`) && currentOwnerValue.value !== `TEAM:${team.id}`) {
       values.push({
         value: `TEAM:${team.id}`,
         title: `团队 · ${team.name}`,
@@ -161,8 +182,9 @@ const ownerTargets = computed<OwnerTarget[]>(() => {
 })
 const selectedOwnerTarget = computed(() => ownerTargets.value.find((item) => item.value === targetOwner.value) ?? null)
 const noTransferReason = computed(() => {
-  if (loading.value) return '正在检查你可管理的目标…'
+  if (loading.value || ownershipPermissionsLoading.value) return '正在检查你可管理的目标…'
   if (!session.user) return '无法读取当前账号，暂时不能转移归属。请刷新页面后重试。'
+  if (!canTransferKnowledgeBase.value) return '你没有管理当前知识库的权限，不能转移归属。'
   return '没有其他你具备管理权限的个人、空间或团队目标。创建团队或取得目标团队的管理员权限后可再转移。'
 })
 
@@ -189,71 +211,145 @@ const previewStyle = computed<Record<string, string>>(() => {
 })
 const previewWidth = computed(() => ({ STANDARD: '640px', WIDE: '780px', FULL: '100%' })[appearance.contentWidth])
 const previewWatermark = computed(() => watermark.text.replaceAll('{{email}}', session.user?.email ?? 'member@example.com'))
+let loadRequestVersion = 0
+let settingsContextVersion = 0
 
 onMounted(load)
 watch(knowledgeBaseId, () => load())
 watch(mergeTarget, () => { mergePlan.value = null; confirmName.value = '' })
 
 async function load() {
-  if (!knowledgeBaseId.value) return
+  const requestedKnowledgeBaseId = knowledgeBaseId.value
+  const requestVersion = ++loadRequestVersion
+  settingsContextVersion += 1
+  resetLoadedKnowledgeBaseState()
+  if (!requestedKnowledgeBaseId) return
   loading.value = true
-  error.value = ''
   try {
-    const knowledgeBase = await post<KnowledgeBase>('/api/v1/knowledge-bases/get', { knowledgeBaseId: knowledgeBaseId.value })
+    const knowledgeBase = await post<KnowledgeBase>('/api/v1/knowledge-bases/get', { knowledgeBaseId: requestedKnowledgeBaseId })
+    assertKnowledgeBase(knowledgeBase, requestedKnowledgeBaseId)
+    if (requestVersion !== loadRequestVersion || requestedKnowledgeBaseId !== knowledgeBaseId.value) return
     kb.value = knowledgeBase
     const [pageValues, memberValues, workspaceMemberValues, teamValues, knowledgeBaseValues] = await Promise.all([
-      post<Page[]>('/api/v1/pages/list', { knowledgeBaseId: knowledgeBaseId.value }),
-      post<Member[]>('/api/v1/knowledge-bases/members', { knowledgeBaseId: knowledgeBaseId.value }),
+      post<Page[]>('/api/v1/pages/list', { knowledgeBaseId: requestedKnowledgeBaseId }),
+      post<Member[]>('/api/v1/knowledge-bases/members', { knowledgeBaseId: requestedKnowledgeBaseId }),
       post<WorkspaceMember[]>('/api/v1/workspaces/members', { workspaceId: knowledgeBase.workspaceId }),
       post<Team[]>('/api/v1/teams/list', { workspaceId: knowledgeBase.workspaceId }),
       post<KnowledgeBase[]>('/api/v1/knowledge-bases/list', { workspaceId: knowledgeBase.workspaceId }),
     ])
-    pages.value = pageValues
-    members.value = memberValues
-    workspaceMembers.value = workspaceMemberValues
-    teams.value = teamValues
-    allKbs.value = knowledgeBaseValues
-    Object.assign(form, {
-      name: knowledgeBase.name,
-      slug: knowledgeBase.slug,
-      description: knowledgeBase.description ?? '',
-      icon: knowledgeBase.icon ?? '',
-      visibility: knowledgeBase.visibility,
-      allowPublicIndex: knowledgeBase.allowPublicIndex,
-      publishMode: knowledgeBase.publishMode,
-      homepagePageId: knowledgeBase.homepagePageId ?? '',
-      appearanceConfig: knowledgeBase.appearanceConfig || '{}',
-      watermarkConfig: knowledgeBase.watermarkConfig || '{}',
-      catalogConfig: knowledgeBase.catalogConfig || '{}',
-    })
+    if (requestVersion !== loadRequestVersion || requestedKnowledgeBaseId !== knowledgeBaseId.value) return
+    pages.value = Array.isArray(pageValues) ? pageValues : []
+    members.value = Array.isArray(memberValues) ? memberValues : []
+    workspaceMembers.value = Array.isArray(workspaceMemberValues) ? workspaceMemberValues : []
+    teams.value = Array.isArray(teamValues) ? teamValues : []
+    allKbs.value = Array.isArray(knowledgeBaseValues) ? knowledgeBaseValues : []
+    hydrateForm(knowledgeBase)
     hydrateAppearance()
     targetOwner.value = ''
     transferDialog.value = false
+    pendingTransferTarget.value = null
+    transferError.value = ''
     mergeTarget.value = ''
     mergePlan.value = null
     confirmName.value = ''
-    await loadTeamRoles(teamValues)
+    await loadOwnershipPermissions(knowledgeBase, teams.value, requestVersion)
   } catch (value) {
-    error.value = messageOf(value)
+    if (requestVersion === loadRequestVersion && requestedKnowledgeBaseId === knowledgeBaseId.value) error.value = messageOf(value)
   } finally {
-    loading.value = false
+    if (requestVersion === loadRequestVersion && requestedKnowledgeBaseId === knowledgeBaseId.value) loading.value = false
   }
 }
 
-async function loadTeamRoles(teamValues: Team[]) {
-  if (!session.user || workspaceCanManage.value) {
-    teamRoles.value = {}
-    return
+function resetLoadedKnowledgeBaseState() {
+  kb.value = null
+  pages.value = []
+  members.value = []
+  workspaceMembers.value = []
+  teams.value = []
+  allKbs.value = []
+  Object.assign(form, emptySettingsForm())
+  Object.assign(appearance, parseKnowledgeBaseAppearance('{}'))
+  Object.assign(watermark, parseKnowledgeBaseWatermark('{}'))
+  Object.assign(catalog, parseKnowledgeBaseCatalogDisplay('{}'))
+  loading.value = false
+  saving.value = knowledgeBaseMutationInFlight(knowledgeBaseId.value, 'settings')
+  memberWorking.value = knowledgeBaseMutationInFlight(knowledgeBaseId.value, 'members')
+  transferring.value = knowledgeBaseMutationInFlight(knowledgeBaseId.value, 'transfer')
+  ownershipPermissionsLoading.value = false
+  canTransferKnowledgeBase.value = false
+  manageableOwnerValues.value = new Set()
+  lifecycleWorking.value = knowledgeBaseLifecycleMutation(knowledgeBaseId.value)
+  error.value = ''
+  candidate.value = ''
+  memberRole.value = 'READER'
+  targetOwner.value = ''
+  transferDialog.value = false
+  pendingTransferTarget.value = null
+  transferError.value = ''
+  mergeTarget.value = ''
+  mergePlan.value = null
+  confirmName.value = ''
+  configWarnings.value = []
+}
+
+function emptySettingsForm(): SettingsForm {
+  return {
+    name: '', slug: '', description: '', icon: '', visibility: 'PRIVATE', allowPublicIndex: false,
+    publishMode: 'MANUAL', homepagePageId: '', appearanceConfig: '{}', watermarkConfig: '{}', catalogConfig: '{}',
   }
-  const results = await Promise.allSettled(teamValues.map(async (team) => {
-    const teamMembers = await post<TeamMember[]>('/api/v1/teams/members', { teamId: team.id })
-    return [team.id, teamMembers.find((member) => member.userId === session.user?.userId)?.role] as const
-  }))
-  teamRoles.value = Object.fromEntries(
-    results
-      .filter((result): result is PromiseFulfilledResult<readonly [string, TeamMember['role'] | undefined]> => result.status === 'fulfilled')
-      .map((result) => result.value),
-  )
+}
+
+function hydrateForm(knowledgeBase: KnowledgeBase) {
+  Object.assign(form, {
+    name: knowledgeBase.name,
+    slug: knowledgeBase.slug,
+    description: knowledgeBase.description ?? '',
+    icon: knowledgeBase.icon ?? '',
+    visibility: knowledgeBase.visibility,
+    allowPublicIndex: knowledgeBase.allowPublicIndex,
+    publishMode: knowledgeBase.publishMode,
+    homepagePageId: knowledgeBase.homepagePageId ?? '',
+    appearanceConfig: knowledgeBase.appearanceConfig || '{}',
+    watermarkConfig: knowledgeBase.watermarkConfig || '{}',
+    catalogConfig: knowledgeBase.catalogConfig || '{}',
+  })
+}
+
+function isActiveSettingsContext(requestedKnowledgeBaseId: string, contextVersion: number) {
+  return contextVersion === settingsContextVersion
+    && requestedKnowledgeBaseId === knowledgeBaseId.value
+    && kb.value?.id === requestedKnowledgeBaseId
+}
+
+function assertKnowledgeBase(value: KnowledgeBase, requestedKnowledgeBaseId: string) {
+  if (!value || typeof value !== 'object' || value.id !== requestedKnowledgeBaseId || typeof value.workspaceId !== 'string'
+    || typeof value.name !== 'string' || typeof value.slug !== 'string') throw new Error('知识库响应格式无效，请重新加载')
+}
+
+async function loadOwnershipPermissions(knowledgeBase: KnowledgeBase, teamValues: Team[], requestVersion: number) {
+  const checks = [
+    { value: 'SOURCE', resourceType: 'KNOWLEDGE_BASE', resourceId: knowledgeBase.id },
+    { value: `WORKSPACE:${knowledgeBase.workspaceId}`, resourceType: 'WORKSPACE', resourceId: knowledgeBase.workspaceId },
+    ...teamValues.map((team) => ({ value: `TEAM:${team.id}`, resourceType: 'TEAM', resourceId: team.id })),
+  ]
+  ownershipPermissionsLoading.value = true
+  try {
+    const results = await Promise.allSettled(checks.map((check) => post<AuthorizationDecision>('/api/v1/authorization/resolve', {
+      resourceType: check.resourceType,
+      resourceId: check.resourceId,
+    })))
+    if (requestVersion !== loadRequestVersion || knowledgeBase.id !== knowledgeBaseId.value) return
+    const manageable = new Set<string>()
+    results.forEach((result, index) => {
+      if (result.status !== 'fulfilled' || !result.value.capabilities.includes('MANAGE')) return
+      const value = checks[index]?.value
+      if (value === 'SOURCE') canTransferKnowledgeBase.value = true
+      else if (value) manageable.add(value)
+    })
+    manageableOwnerValues.value = manageable
+  } finally {
+    if (requestVersion === loadRequestVersion && knowledgeBase.id === knowledgeBaseId.value) ownershipPermissionsLoading.value = false
+  }
 }
 
 function hydrateAppearance() {
@@ -268,116 +364,238 @@ function hydrateAppearance() {
 }
 
 async function save(successMessage = '知识库设置已保存') {
-  if (!kb.value) return
+  const current = activeKnowledgeBase.value
+  if (!current || loading.value || saving.value || knowledgeBaseMutationInFlight(current.id, 'settings')) return false
+  const requestedKnowledgeBaseId = current.id
+  const contextVersion = settingsContextVersion
+  const snapshot = { ...form, allowPublicIndex: form.visibility === 'PUBLIC' && form.allowPublicIndex }
+  if (!acquireKnowledgeBaseMutation(requestedKnowledgeBaseId, 'settings')) return false
   saving.value = true
   error.value = ''
   try {
-    if (form.visibility !== 'PUBLIC') form.allowPublicIndex = false
-    kb.value = await post<KnowledgeBase>('/api/v1/knowledge-bases/update', {
-      knowledgeBaseId: knowledgeBaseId.value,
-      ...form,
-      description: form.description || null,
-      icon: form.icon || null,
-      homepagePageId: form.homepagePageId || null,
-      allowPublicIndex: form.allowPublicIndex,
+    const updated = await post<KnowledgeBase>('/api/v1/knowledge-bases/update', {
+      knowledgeBaseId: requestedKnowledgeBaseId,
+      ...snapshot,
+      description: snapshot.description || null,
+      icon: snapshot.icon || null,
+      homepagePageId: snapshot.homepagePageId || null,
     })
+    assertKnowledgeBase(updated, requestedKnowledgeBaseId)
     await session.loadNavigation()
+    if (!isActiveSettingsContext(requestedKnowledgeBaseId, contextVersion)) return false
+    kb.value = updated
+    if (form.visibility !== 'PUBLIC') form.allowPublicIndex = false
     ui.notify(successMessage)
+    return true
   } catch (value) {
-    error.value = messageOf(value)
+    if (isActiveSettingsContext(requestedKnowledgeBaseId, contextVersion)) error.value = messageOf(value)
+    return false
   } finally {
-    saving.value = false
+    releaseKnowledgeBaseMutation(requestedKnowledgeBaseId, 'settings')
+    if (knowledgeBaseId.value === requestedKnowledgeBaseId) saving.value = false
   }
 }
 
 async function saveAppearance() {
-  if (appearanceInvalid.value) return
+  if (appearanceInvalid.value || !activeKnowledgeBase.value || loading.value || saving.value) return
+  const requestedKnowledgeBaseId = activeKnowledgeBase.value.id
+  const contextVersion = settingsContextVersion
   form.appearanceConfig = mergeKnowledgeBaseConfig(form.appearanceConfig, { ...appearance, coverUrl: safeCoverUrl.value })
   form.watermarkConfig = mergeKnowledgeBaseConfig(form.watermarkConfig, { ...watermark, text: watermark.text.trim() })
   form.catalogConfig = mergeKnowledgeBaseConfig(form.catalogConfig, { ...catalog })
-  await save('外观与阅读设置已保存')
-  if (!error.value) configWarnings.value = []
+  const succeeded = await save('外观与阅读设置已保存')
+  if (succeeded && isActiveSettingsContext(requestedKnowledgeBaseId, contextVersion)) configWarnings.value = []
 }
 
 async function addMember() {
+  const current = activeKnowledgeBase.value
+  const requestedUserId = candidate.value
+  if (!current || loading.value || memberWorking.value || knowledgeBaseMutationInFlight(current.id, 'members') || !requestedUserId) return
+  const requestedKnowledgeBaseId = current.id
+  const contextVersion = settingsContextVersion
+  if (!acquireKnowledgeBaseMutation(requestedKnowledgeBaseId, 'members')) return
+  memberWorking.value = true
   try {
-    await post('/api/v1/knowledge-bases/members/upsert', { knowledgeBaseId: knowledgeBaseId.value, userId: candidate.value, role: memberRole.value })
+    await post('/api/v1/knowledge-bases/members/upsert', { knowledgeBaseId: requestedKnowledgeBaseId, userId: requestedUserId, role: memberRole.value })
+    if (!isActiveSettingsContext(requestedKnowledgeBaseId, contextVersion)) return
     candidate.value = ''
     await load()
-  } catch (value) { error.value = messageOf(value) }
+  } catch (value) {
+    if (isActiveSettingsContext(requestedKnowledgeBaseId, contextVersion)) error.value = messageOf(value)
+  } finally {
+    releaseKnowledgeBaseMutation(requestedKnowledgeBaseId, 'members')
+    if (knowledgeBaseId.value === requestedKnowledgeBaseId) memberWorking.value = false
+  }
 }
 
 async function removeMember(userId: string) {
+  const current = activeKnowledgeBase.value
+  if (!current || loading.value || memberWorking.value || knowledgeBaseMutationInFlight(current.id, 'members')) return
+  const requestedKnowledgeBaseId = current.id
+  const contextVersion = settingsContextVersion
+  if (!acquireKnowledgeBaseMutation(requestedKnowledgeBaseId, 'members')) return
+  memberWorking.value = true
   try {
-    await post('/api/v1/knowledge-bases/members/remove', { knowledgeBaseId: knowledgeBaseId.value, userId, role: null })
+    await post('/api/v1/knowledge-bases/members/remove', { knowledgeBaseId: requestedKnowledgeBaseId, userId, role: null })
+    if (!isActiveSettingsContext(requestedKnowledgeBaseId, contextVersion)) return
     await load()
-  } catch (value) { error.value = messageOf(value) }
+  } catch (value) {
+    if (isActiveSettingsContext(requestedKnowledgeBaseId, contextVersion)) error.value = messageOf(value)
+  } finally {
+    releaseKnowledgeBaseMutation(requestedKnowledgeBaseId, 'members')
+    if (knowledgeBaseId.value === requestedKnowledgeBaseId) memberWorking.value = false
+  }
 }
 
 function confirmTransfer() {
-  if (!selectedOwnerTarget.value || targetOwner.value === currentOwnerValue.value) return
+  if (!activeKnowledgeBase.value || loading.value || transferring.value || ownershipPermissionsLoading.value || !selectedOwnerTarget.value || targetOwner.value === currentOwnerValue.value) return
+  pendingTransferTarget.value = { ...selectedOwnerTarget.value }
+  transferError.value = ''
   transferDialog.value = true
 }
 
+function closeTransferDialog() {
+  if (transferring.value) return
+  transferDialog.value = false
+  pendingTransferTarget.value = null
+  transferError.value = ''
+}
+
+function updateTransferDialog(value: boolean) {
+  if (value) transferDialog.value = true
+  else closeTransferDialog()
+}
+
 async function transfer() {
-  if (!selectedOwnerTarget.value || targetOwner.value === currentOwnerValue.value) return
-  const separator = targetOwner.value.indexOf(':')
-  const ownerType = targetOwner.value.slice(0, separator)
-  const ownerId = targetOwner.value.slice(separator + 1)
+  const current = activeKnowledgeBase.value
+  const transferTarget = pendingTransferTarget.value
+  if (!current || loading.value || transferring.value || knowledgeBaseMutationInFlight(current.id, 'transfer') || !transferTarget || transferTarget.value === currentOwnerValue.value) return
+  if (!ownerTargets.value.some((item) => item.value === transferTarget.value)) {
+    transferError.value = '目标归属已不可用，请关闭确认窗口后重新选择。'
+    return
+  }
+  const separator = transferTarget.value.indexOf(':')
+  if (separator < 1 || separator === transferTarget.value.length - 1) return
+  const ownerType = transferTarget.value.slice(0, separator)
+  const ownerId = transferTarget.value.slice(separator + 1)
+  const requestedKnowledgeBaseId = current.id
+  const contextVersion = settingsContextVersion
+  if (!acquireKnowledgeBaseMutation(requestedKnowledgeBaseId, 'transfer')) return
   transferring.value = true
   error.value = ''
+  transferError.value = ''
   try {
-    await post('/api/v1/knowledge-bases/transfer', { knowledgeBaseId: knowledgeBaseId.value, ownerType, ownerId })
+    let transferred: KnowledgeBase
+    try {
+      transferred = await post<KnowledgeBase>('/api/v1/knowledge-bases/transfer', { knowledgeBaseId: requestedKnowledgeBaseId, ownerType, ownerId })
+    } catch (value) {
+      if (isActiveSettingsContext(requestedKnowledgeBaseId, contextVersion)) transferError.value = messageOf(value)
+      return
+    }
+    assertKnowledgeBase(transferred, requestedKnowledgeBaseId)
+
+    if (!isActiveSettingsContext(requestedKnowledgeBaseId, contextVersion)) {
+      await session.loadNavigation()
+      return
+    }
+    kb.value = transferred
     transferDialog.value = false
-    await session.loadNavigation()
-    await load()
+    pendingTransferTarget.value = null
+    targetOwner.value = ''
+    const refreshes: Array<Promise<unknown>> = [session.loadNavigation()]
+    refreshes.push(load())
+    const refreshResults = await Promise.allSettled(refreshes)
+    const refreshFailure = refreshResults.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+    if (refreshFailure && requestedKnowledgeBaseId === knowledgeBaseId.value) {
+      error.value = `归属已完成转移，但页面刷新失败：${messageOf(refreshFailure.reason)}`
+    }
     ui.notify('知识库归属已转移')
   } catch (value) {
-    error.value = messageOf(value)
-    transferDialog.value = false
-  } finally { transferring.value = false }
+    if (isActiveSettingsContext(requestedKnowledgeBaseId, contextVersion)) transferError.value = messageOf(value)
+  } finally {
+    releaseKnowledgeBaseMutation(requestedKnowledgeBaseId, 'transfer')
+    if (knowledgeBaseId.value === requestedKnowledgeBaseId) transferring.value = false
+  }
 }
 
 async function planMerge() {
-  if (!mergeTarget.value || lifecycleWorking.value) return
+  const current = activeKnowledgeBase.value
+  const requestedTargetId = mergeTarget.value
+  if (!current || loading.value || !requestedTargetId || lifecycleWorking.value || knowledgeBaseMutationInFlight(current.id, 'lifecycle')) return
+  const requestedKnowledgeBaseId = current.id
+  const contextVersion = settingsContextVersion
+  if (!acquireKnowledgeBaseMutation(requestedKnowledgeBaseId, 'lifecycle', 'plan')) return
   lifecycleWorking.value = 'plan'
   error.value = ''
   try {
-    mergePlan.value = await post('/api/v1/knowledge-bases/merge/plan', { sourceKnowledgeBaseId: knowledgeBaseId.value, targetKnowledgeBaseId: mergeTarget.value })
+    const value = await post<MergePlan>('/api/v1/knowledge-bases/merge/plan', { sourceKnowledgeBaseId: requestedKnowledgeBaseId, targetKnowledgeBaseId: requestedTargetId })
+    const plan = normalizeMergePlan(value, requestedKnowledgeBaseId, requestedTargetId)
+    if (isActiveSettingsContext(requestedKnowledgeBaseId, contextVersion) && mergeTarget.value === requestedTargetId) mergePlan.value = plan
   } catch (value) {
-    error.value = messageOf(value)
-  } finally { lifecycleWorking.value = '' }
+    if (isActiveSettingsContext(requestedKnowledgeBaseId, contextVersion)) error.value = messageOf(value)
+  } finally {
+    releaseKnowledgeBaseMutation(requestedKnowledgeBaseId, 'lifecycle')
+    if (knowledgeBaseId.value === requestedKnowledgeBaseId) lifecycleWorking.value = ''
+  }
 }
 
 async function executeMerge() {
-  if (!mergePlan.value || confirmName.value !== kb.value?.name || lifecycleWorking.value) return
+  const current = activeKnowledgeBase.value
+  const plan = mergePlan.value
+  const requestedTargetId = mergeTarget.value
+  if (!current || loading.value || !plan || plan.sourceKnowledgeBaseId !== current.id || plan.targetKnowledgeBaseId !== requestedTargetId || confirmName.value !== current.name || lifecycleWorking.value || knowledgeBaseMutationInFlight(current.id, 'lifecycle')) return
+  const requestedKnowledgeBaseId = current.id
+  const contextVersion = settingsContextVersion
+  if (!acquireKnowledgeBaseMutation(requestedKnowledgeBaseId, 'lifecycle', 'merge')) return
   lifecycleWorking.value = 'merge'
   error.value = ''
   try {
     await post('/api/v1/knowledge-bases/merge/execute', {
-      sourceKnowledgeBaseId: knowledgeBaseId.value,
-      targetKnowledgeBaseId: mergeTarget.value,
-      planFingerprint: mergePlan.value.fingerprint,
+      sourceKnowledgeBaseId: requestedKnowledgeBaseId,
+      targetKnowledgeBaseId: requestedTargetId,
+      planFingerprint: plan.fingerprint,
       idempotencyKey: createUuid(),
     })
     await session.loadNavigation()
-    await router.replace(`/app/kb/${mergeTarget.value}`)
+    if (isActiveSettingsContext(requestedKnowledgeBaseId, contextVersion)) await router.replace(`/app/kb/${requestedTargetId}`)
   } catch (value) {
-    error.value = messageOf(value)
-  } finally { lifecycleWorking.value = '' }
+    if (isActiveSettingsContext(requestedKnowledgeBaseId, contextVersion)) error.value = messageOf(value)
+  } finally {
+    releaseKnowledgeBaseMutation(requestedKnowledgeBaseId, 'lifecycle')
+    if (knowledgeBaseId.value === requestedKnowledgeBaseId) lifecycleWorking.value = ''
+  }
 }
 
 async function archive() {
-  if (confirmName.value !== kb.value?.name || lifecycleWorking.value) return
+  const current = activeKnowledgeBase.value
+  if (!current || loading.value || confirmName.value !== current.name || lifecycleWorking.value || knowledgeBaseMutationInFlight(current.id, 'lifecycle')) return
+  const requestedKnowledgeBaseId = current.id
+  const requestedWorkspaceId = current.workspaceId
+  const contextVersion = settingsContextVersion
+  if (!acquireKnowledgeBaseMutation(requestedKnowledgeBaseId, 'lifecycle', 'archive')) return
   lifecycleWorking.value = 'archive'
   error.value = ''
   try {
-    await post('/api/v1/knowledge-bases/archive', { knowledgeBaseId: knowledgeBaseId.value })
+    await post('/api/v1/knowledge-bases/archive', { knowledgeBaseId: requestedKnowledgeBaseId })
     await session.loadNavigation()
-    await router.replace(`/app/w/${kb.value?.workspaceId}`)
+    if (isActiveSettingsContext(requestedKnowledgeBaseId, contextVersion)) await router.replace(`/app/w/${requestedWorkspaceId}`)
   } catch (value) {
-    error.value = messageOf(value)
-  } finally { lifecycleWorking.value = '' }
+    if (isActiveSettingsContext(requestedKnowledgeBaseId, contextVersion)) error.value = messageOf(value)
+  } finally {
+    releaseKnowledgeBaseMutation(requestedKnowledgeBaseId, 'lifecycle')
+    if (knowledgeBaseId.value === requestedKnowledgeBaseId) lifecycleWorking.value = ''
+  }
+}
+
+function normalizeMergePlan(value: MergePlan, sourceKnowledgeBaseId: string, targetKnowledgeBaseId: string): MergePlan {
+  if (!value || typeof value !== 'object' || value.sourceKnowledgeBaseId !== sourceKnowledgeBaseId
+    || value.targetKnowledgeBaseId !== targetKnowledgeBaseId || typeof value.fingerprint !== 'string' || !value.fingerprint
+    || !Number.isFinite(value.pageCount) || !Number.isFinite(value.catalogNodeCount) || !Array.isArray(value.paths)
+    || !Array.isArray(value.warnings) || !value.warnings.every((warning) => typeof warning === 'string')
+    || !value.paths.every((path) => path && typeof path === 'object' && typeof path.pageId === 'string'
+      && typeof path.title === 'string' && typeof path.originalPath === 'string' && typeof path.resolvedPath === 'string'
+      && typeof path.renamed === 'boolean')) throw new Error('合并预检响应格式无效，请重新预检')
+  return value
 }
 
 function validateCover(value: string) {
@@ -415,14 +633,15 @@ function isJsonObject(value: string) {
       <v-progress-linear v-if="loading" indeterminate color="primary" class="page-progress" />
 
       <nav class="settings-tabs" aria-label="知识库设置">
-        <button type="button" :class="{ active: tab === 'general' }" @click="tab = 'general'">基础</button>
-        <button type="button" :class="{ active: tab === 'appearance' }" @click="tab = 'appearance'">外观</button>
-        <button type="button" :class="{ active: tab === 'members' }" @click="tab = 'members'">成员</button>
-        <button type="button" :class="{ active: tab === 'sharing' }" @click="tab = 'sharing'">分享与访问</button>
-        <button type="button" :class="{ active: tab === 'danger' }" @click="tab = 'danger'">高级</button>
+        <button type="button" :disabled="loading || !activeKnowledgeBase || transferring" :class="{ active: tab === 'general' }" @click="tab = 'general'">基础</button>
+        <button type="button" :disabled="loading || !activeKnowledgeBase || transferring" :class="{ active: tab === 'appearance' }" @click="tab = 'appearance'">外观</button>
+        <button type="button" :disabled="loading || !activeKnowledgeBase || transferring" :class="{ active: tab === 'members' }" @click="tab = 'members'">成员</button>
+        <button type="button" :disabled="loading || !activeKnowledgeBase || transferring" :class="{ active: tab === 'sharing' }" @click="tab = 'sharing'">分享与访问</button>
+        <button type="button" :disabled="loading || !activeKnowledgeBase || transferring" :class="{ active: tab === 'ownership' }" @click="tab = 'ownership'">归属</button>
+        <button type="button" :disabled="loading || !activeKnowledgeBase || transferring" :class="{ active: tab === 'danger' }" @click="tab = 'danger'">高级</button>
       </nav>
 
-      <main class="settings-stage">
+      <main v-if="activeKnowledgeBase" class="settings-stage">
         <section v-if="tab === 'general'" class="settings-panel">
           <div class="panel-heading">
             <div><h2>基础信息</h2><p>设置知识库的名称、地址和默认访问方式。</p></div>
@@ -445,7 +664,7 @@ function isJsonObject(value: string) {
               <v-switch v-model="form.allowPublicIndex" color="primary" inset hide-details :disabled="form.visibility !== 'PUBLIC'" aria-label="允许搜索引擎收录" />
             </div>
           </div>
-          <div class="panel-actions"><v-btn color="primary" :loading="saving" :disabled="!form.name.trim() || !form.slug.trim()" @click="save()">保存设置</v-btn></div>
+          <div class="panel-actions"><v-btn color="primary" :loading="saving" :disabled="loading || saving || !form.name.trim() || !form.slug.trim()" @click="save()">保存设置</v-btn></div>
         </section>
 
         <section v-else-if="tab === 'appearance'" class="settings-panel appearance-panel">
@@ -487,7 +706,7 @@ function isJsonObject(value: string) {
                 <div class="setting-switch compact"><span>显示文稿访问路径</span><v-switch v-model="catalog.showPath" color="primary" inset hide-details aria-label="显示文稿访问路径" /></div>
                 <div class="setting-switch compact"><span>显示最近更新时间</span><v-switch v-model="catalog.showUpdatedAt" color="primary" inset hide-details aria-label="显示最近更新时间" /></div>
               </div>
-              <div class="panel-actions"><v-btn color="primary" :loading="saving" :disabled="appearanceInvalid" @click="saveAppearance">保存外观设置</v-btn></div>
+              <div class="panel-actions"><v-btn color="primary" :loading="saving" :disabled="loading || saving || appearanceInvalid" @click="saveAppearance">保存外观设置</v-btn></div>
             </section>
 
             <aside class="preview-column">
@@ -514,39 +733,54 @@ function isJsonObject(value: string) {
 
         <section v-else-if="tab === 'members'" class="settings-panel members-panel">
           <div class="panel-heading"><div><h2>成员</h2><p>邀请空间成员加入知识库并设置访问权限。</p></div><span class="count-label">{{ members.length }} 名成员</span></div>
-          <div class="member-toolbar"><v-select v-model="candidate" :items="workspaceMembers.filter(person => !members.some(member => member.userId === person.userId))" item-title="email" item-value="userId" label="选择空间成员" hide-details density="comfortable" variant="outlined" /><v-select v-model="memberRole" :items="memberRoleItems" label="授予权限" hide-details density="comfortable" variant="outlined" /><v-btn color="primary" :disabled="!candidate" @click="addMember">添加成员</v-btn></div>
+          <div class="member-toolbar"><v-select v-model="candidate" :items="workspaceMembers.filter(person => !members.some(member => member.userId === person.userId))" item-title="email" item-value="userId" label="选择空间成员" hide-details density="comfortable" variant="outlined" :disabled="loading || memberWorking" /><v-select v-model="memberRole" :items="memberRoleItems" label="授予权限" hide-details density="comfortable" variant="outlined" :disabled="loading || memberWorking" /><v-btn color="primary" :loading="memberWorking" :disabled="loading || memberWorking || !candidate" @click="addMember">添加成员</v-btn></div>
           <div class="member-list">
-            <div v-for="member in members" :key="member.userId" class="member-row"><v-avatar size="34" color="#eef3ff"><v-icon size="19" color="#3978f6">mdi-account-outline</v-icon></v-avatar><div><strong>{{ member.displayName || member.email }}</strong><span>{{ member.email }}</span></div><span class="member-role">{{ memberRoleItems.find(item => item.value === member.role)?.title }}</span><v-btn icon="mdi-close" size="small" variant="text" color="error" :aria-label="`移除 ${member.email}`" @click="removeMember(member.userId)" /></div>
+            <div v-for="member in members" :key="member.userId" class="member-row"><v-avatar size="34" color="#eef3ff"><v-icon size="19" color="#3978f6">mdi-account-outline</v-icon></v-avatar><div><strong>{{ member.displayName || member.email }}</strong><span>{{ member.email }}</span></div><span class="member-role">{{ memberRoleItems.find(item => item.value === member.role)?.title }}</span><v-btn icon="mdi-close" size="small" variant="text" color="error" :disabled="loading || memberWorking" :aria-label="`移除 ${member.email}`" @click="removeMember(member.userId)" /></div>
             <div v-if="!members.length && !loading" class="empty-members">还没有单独添加成员，知识库将使用上层访问规则。</div>
           </div>
         </section>
 
         <div v-else-if="tab === 'sharing' && kb" class="share-wrap"><KnowledgeBaseSharesPanel :knowledge-base="kb" /></div>
 
-        <div v-else class="advanced-stack">
-          <section class="settings-panel">
-            <div class="panel-heading"><div><h2>高级设置</h2><p>管理知识库归属和生命周期。普通使用无需调整这些设置。</p></div></div>
-            <div class="advanced-section">
-              <div class="advanced-heading"><div><h3>管理归属</h3><p>决定由个人、空间或团队中的谁管理知识库并继承权限。</p></div><span class="secondary-badge">管理设置</span></div>
-              <div class="current-owner">
-                <v-icon size="20">{{ kb?.ownerType === 'TEAM' ? 'mdi-account-group-outline' : kb?.ownerType === 'PERSONAL' ? 'mdi-account-outline' : 'mdi-domain' }}</v-icon>
-                <div><small>当前归属</small><strong>{{ currentOwnerTitle }}</strong><span>{{ currentOwnerDescription }}</span></div>
-              </div>
-              <template v-if="ownerTargets.length">
-                <v-select v-model="targetOwner" :items="ownerTargets" item-title="title" item-value="value" label="转移到" clearable density="comfortable" variant="outlined" class="owner-select">
-                  <template #item="{ props, item }"><v-list-item v-bind="props" :prepend-icon="item.raw.icon" :subtitle="item.raw.subtitle" /></template>
-                  <template #selection="{ item }"><div class="owner-selection"><v-icon size="18" class="mr-2">{{ item.raw.icon }}</v-icon><span>{{ item.raw.title }}</span></div></template>
-                </v-select>
-                <p class="inline-hint">只显示你具备管理权限的目标；转移不会改变内容、文稿 ID 或公开链接。</p>
-                <v-btn variant="outlined" :disabled="!selectedOwnerTarget" @click="confirmTransfer">转移管理归属</v-btn>
-              </template>
-              <p v-else class="inline-hint">{{ noTransferReason }}</p>
+        <section v-else-if="tab === 'ownership'" class="settings-panel ownership-panel">
+          <div class="panel-heading"><div><h2>知识库归属</h2><p>查看当前归属，并将知识库转移给你有权管理的个人、空间或团队。</p></div></div>
+          <div class="ownership-section">
+            <div class="current-owner">
+              <v-icon size="20">{{ kb?.ownerType === 'TEAM' ? 'mdi-account-group-outline' : kb?.ownerType === 'PERSONAL' ? 'mdi-account-outline' : 'mdi-domain' }}</v-icon>
+              <div><small>当前归属</small><strong>{{ currentOwnerTitle }}</strong><span>{{ currentOwnerDescription }}</span></div>
             </div>
+            <v-select
+              v-model="targetOwner"
+              :items="ownerTargets"
+              item-title="title"
+              item-value="value"
+              label="目标归属"
+              no-data-text="暂无可转移的归属"
+              clearable
+              density="comfortable"
+              variant="outlined"
+              class="owner-select"
+              :disabled="loading || ownershipPermissionsLoading || transferring || !ownerTargets.length"
+            >
+              <template #item="{ props, item }"><v-list-item v-bind="props" :prepend-icon="item.raw.icon" :subtitle="item.raw.subtitle" /></template>
+              <template #selection="{ item }"><div v-if="item?.raw" class="owner-selection"><v-icon size="18" class="mr-2">{{ item.raw.icon }}</v-icon><span>{{ item.raw.title }}</span></div></template>
+            </v-select>
+            <p class="inline-hint">只显示你具备管理权限的目标；转移不会改变内容、文稿 ID 或公开链接。</p>
+            <div v-if="!loading && !ownershipPermissionsLoading && !ownerTargets.length" class="ownership-empty">
+              <v-icon size="22">mdi-swap-horizontal</v-icon><div><strong>暂无可转移的归属</strong><p>{{ noTransferReason }}</p></div>
+            </div>
+            <div class="ownership-actions"><v-btn color="primary" variant="outlined" :disabled="!selectedOwnerTarget || transferring || ownershipPermissionsLoading" @click="confirmTransfer">转移归属</v-btn></div>
+          </div>
+        </section>
+
+        <div v-else-if="tab === 'danger'" class="advanced-stack">
+          <section class="settings-panel">
+            <div class="panel-heading"><div><h2>高级设置</h2><p>管理知识库生命周期。普通使用无需调整这些设置。</p></div></div>
 
             <div class="advanced-section">
               <div class="advanced-heading"><div><h3>合并知识库</h3><p>先预检目录和路径冲突，再将当前知识库合并到目标知识库。</p></div></div>
               <div class="merge-row"><v-select v-model="mergeTarget" :items="allKbs.filter(item => item.id !== knowledgeBaseId)" item-title="name" item-value="id" label="目标知识库" hide-details density="comfortable" variant="outlined" /><v-btn variant="outlined" :loading="lifecycleWorking === 'plan'" :disabled="!mergeTarget || Boolean(lifecycleWorking)" @click="planMerge">开始预检</v-btn></div>
-              <v-alert v-if="mergePlan" type="warning" variant="tonal" density="compact" class="mt-4">将移动 {{ mergePlan.pageCount }} 篇内容和 {{ mergePlan.catalogNodeCount }} 个目录项；检测到 {{ mergePlan.pathConflicts.length }} 个路径冲突。</v-alert>
+              <v-alert v-if="mergePlan" type="warning" variant="tonal" density="compact" class="mt-4">将移动 {{ mergePlan.pageCount }} 篇内容和 {{ mergePlan.catalogNodeCount }} 个目录项；检测到 {{ mergePlan.paths.filter(path => path.renamed).length }} 个路径冲突。</v-alert>
             </div>
 
             <div class="advanced-section danger-section">
@@ -559,12 +793,12 @@ function isJsonObject(value: string) {
       </main>
     </div>
 
-    <v-dialog v-model="transferDialog" max-width="520">
-      <v-card rounded="lg"><v-card-title class="pa-6 pb-2">确认转移管理归属？</v-card-title><v-card-text class="px-6"><p>“{{ kb?.name }}”将从“{{ currentOwnerTitle }}”转移到“{{ selectedOwnerTarget?.title }}”。</p><v-alert type="warning" variant="tonal" density="compact">转移会立即改变权限继承关系，但不会改变内容、文稿 ID 和公开链接。</v-alert></v-card-text><v-card-actions class="pa-6 pt-3"><v-spacer /><v-btn :disabled="transferring" @click="transferDialog = false">取消</v-btn><v-btn color="primary" :loading="transferring" @click="transfer">确认转移</v-btn></v-card-actions></v-card>
+    <v-dialog :model-value="transferDialog" :persistent="transferring" max-width="520" @update:model-value="updateTransferDialog">
+      <v-card v-if="transferDialog" rounded="lg"><v-card-title class="pa-6 pb-2">确认转移知识库归属？</v-card-title><v-card-text class="px-6"><p>“{{ kb?.name }}”将从“{{ currentOwnerTitle }}”转移到“{{ pendingTransferTarget?.title }}”。</p><v-alert type="warning" variant="tonal" density="compact">转移会立即改变权限继承关系，但不会改变内容、文稿 ID 和公开链接。</v-alert><v-alert v-if="transferError" type="error" variant="tonal" density="compact" class="mt-3">{{ transferError }}</v-alert></v-card-text><v-card-actions class="pa-6 pt-3"><v-spacer /><v-btn :disabled="transferring" @click="closeTransferDialog">取消</v-btn><v-btn color="primary" :loading="transferring" :disabled="transferring || !pendingTransferTarget" @click="transfer">确认转移</v-btn></v-card-actions></v-card>
     </v-dialog>
   </div>
 </template>
 
 <style scoped>
-.kb-settings-page{min-height:100vh;padding:34px 36px 72px;background:#f7f8fa;color:#262626}.settings-container{width:min(1080px,100%);margin:0 auto}.settings-header{margin-bottom:20px}.back-link{display:inline-flex;height:30px;align-items:center;gap:6px;margin-bottom:13px;color:#595959;font-size:13px;text-decoration:none}.back-link:hover{color:#1677ff}.settings-header h1{margin:0;font-size:24px;font-weight:600;line-height:34px;letter-spacing:-.02em}.settings-header p{margin:6px 0 0;color:#8a8f8d;font-size:14px}.page-alert{margin:0 0 14px}.page-progress{margin-bottom:10px}.settings-tabs{display:flex;height:46px;align-items:flex-end;gap:30px;border-bottom:1px solid #e7e9e8}.settings-tabs button{position:relative;height:46px;padding:0 2px;border:0;color:#595959;background:transparent;font:500 14px/46px inherit;cursor:pointer;white-space:nowrap}.settings-tabs button:hover{color:#262626}.settings-tabs button.active{color:#1677ff}.settings-tabs button.active::after{position:absolute;right:0;bottom:-1px;left:0;height:2px;border-radius:2px;background:#1677ff;content:""}.settings-stage{padding-top:20px}.settings-panel{overflow:hidden;border:1px solid #e7e9e8;border-radius:10px;padding:26px 30px 30px;background:#fff}.panel-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:24px}.panel-heading h2{margin:0;color:#262626;font-size:18px;font-weight:600;line-height:26px}.panel-heading p,.subsection-heading p,.advanced-heading p{margin:4px 0 0;color:#8a8f8d;font-size:13px;line-height:20px}.compact-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 18px}.description-field{margin-top:2px}.subsection{margin-top:8px;border-top:1px solid #eff0f0;padding-top:23px}.subsection-heading h3,.advanced-heading h3{margin:0;font-size:15px;font-weight:600}.setting-switch{display:flex;min-height:56px;align-items:center;justify-content:space-between;gap:18px;border-top:1px solid #eff0f0;padding:8px 2px}.setting-switch>div{display:flex;flex-direction:column}.setting-switch strong{font-size:14px;font-weight:500}.setting-switch span,.inline-hint{color:#8a8f8d;font-size:12px;line-height:18px}.setting-switch.compact{min-height:48px}.panel-actions{display:flex;justify-content:flex-end;margin-top:22px}.appearance-panel{overflow:visible}.appearance-layout{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:32px}.appearance-form{min-width:0}.config-section{border-top:1px solid #eff0f0;padding:23px 0}.config-section.first{border-top:0;padding-top:0}.theme-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px}.theme-option{display:grid;min-height:60px;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:10px;padding:9px 12px;border:1px solid #dfe2e1;border-radius:7px;color:#595959;background:#fff;font:inherit;text-align:left;cursor:pointer}.theme-option:hover{border-color:#b9bdba}.theme-option.selected{border-color:#7ba7f8;background:#f5f8ff;color:#245ec6}.theme-option span{display:flex;min-width:0;flex-direction:column}.theme-option strong{color:#262626;font-size:13px;font-weight:500}.theme-option small{margin-top:1px;color:#8a8f8d;font-size:11px}.color-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.setting-heading{display:flex;align-items:center;justify-content:space-between;gap:20px}.slider-label{display:flex;justify-content:space-between;margin:13px 0 4px;color:#595959;font-size:12px}.inline-hint{margin:8px 0}.preview-sticky{position:sticky;top:24px}.preview-heading{margin-bottom:8px;color:#8a8f8d;font-size:12px}.reader-preview{min-height:370px;display:flex;align-items:center;justify-content:center;overflow:hidden;border:1px solid #e7e9e8;border-radius:8px;padding:18px;background-position:center;background-size:cover}.preview-document{position:relative;width:100%;min-height:300px;overflow:hidden;border-radius:7px;padding:28px;background:rgba(255,255,255,.96);color:#1e293b;box-shadow:0 9px 30px rgba(15,23,42,.1)}.theme-minimal .preview-document{border-radius:1px;box-shadow:none}.theme-magazine .preview-document h2{font-family:Georgia,'Noto Serif SC',serif;font-size:1.65rem}.theme-dark .preview-document{background:rgba(17,24,39,.96);color:#e5e7eb}.preview-document small{color:var(--preview-accent);font-weight:700}.preview-document h2{margin:7px 0;font-size:1.45rem}.preview-document h3{margin:18px 0 6px;font-size:14px}.preview-document p{color:#64748b;font-size:12px;line-height:1.65}.theme-dark .preview-document p{color:#94a3b8}.preview-document a{color:var(--preview-accent);font-size:12px;font-weight:600}.preview-icon{display:block;margin-bottom:11px;font-size:1.65rem}.preview-rule{width:42px;height:2px;margin-top:18px;border-radius:9px;background:var(--preview-accent)}.preview-watermark{position:absolute;color:var(--preview-accent);font-size:11px;font-weight:700;pointer-events:none;white-space:nowrap}.preview-watermark.position-center{inset:50% auto auto 50%;transform:translate(-50%,-50%) rotate(-22deg)}.preview-watermark.position-footer{inset:auto 14px 11px auto}.preview-watermark.position-tiled{inset:48% auto auto 42%;transform:rotate(-22deg);text-shadow:-120px -95px currentColor,120px -95px currentColor,-120px 95px currentColor,120px 95px currentColor}.catalog-preview{margin-top:12px;border:1px solid #e7e9e8;border-radius:8px;padding:13px;background:#fafafa}.catalog-preview header{display:flex;align-items:center;gap:7px;margin-bottom:7px;font-size:12px}.catalog-preview header span{margin-left:auto;color:#8a8f8d;font-size:11px}.catalog-row{display:flex;min-height:30px;align-items:center;gap:7px;color:#595959;font-size:12px}.catalog-row.nested{padding-left:20px}.catalog-row span{display:flex;min-width:0;align-items:center;gap:7px}.catalog-row small{color:#a1a4a2}.count-label,.secondary-badge{border-radius:5px;padding:3px 7px;color:#8a8f8d;background:#f3f4f4;font-size:12px}.member-toolbar{display:grid;grid-template-columns:minmax(260px,1fr) 170px auto;align-items:center;gap:10px;margin-bottom:20px}.member-list{border-top:1px solid #eff0f0}.member-row{display:grid;min-height:58px;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:11px;border-bottom:1px solid #f2f3f3}.member-row>div{display:flex;min-width:0;flex-direction:column}.member-row strong{overflow:hidden;font-size:13px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}.member-row span{color:#8a8f8d;font-size:12px}.member-role{padding:3px 7px;border-radius:5px;background:#f3f4f4}.empty-members{padding:52px 20px;color:#8a8f8d;font-size:13px;text-align:center}.share-wrap :deep(.share-panel){border-color:#e7e9e8!important;border-radius:10px!important;box-shadow:none!important}.share-wrap :deep(.panel-title){padding:24px 28px 18px!important}.share-wrap :deep(.v-card-text){padding-right:28px!important;padding-left:28px!important}.advanced-stack{display:grid;gap:16px}.advanced-section{border-top:1px solid #eff0f0;padding:24px 0 2px}.advanced-section:first-of-type{border-top:0;padding-top:0}.advanced-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.current-owner{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:12px;margin:15px 0;padding:13px 14px;border:1px solid #e7e9e8;border-radius:7px;background:#fafafa}.current-owner>div{display:flex;min-width:0;flex-direction:column}.current-owner small{color:#8a8f8d;font-size:11px}.current-owner strong{margin:1px 0;color:#262626;font-size:13px;font-weight:500}.current-owner span{color:#8a8f8d;font-size:12px}.owner-select{max-width:620px;margin-top:15px}.owner-selection{display:flex;align-items:center}.merge-row{display:grid;grid-template-columns:minmax(0,620px) auto;align-items:center;gap:10px;margin-top:15px}.danger-section h3{color:#d93026}.confirm-field{max-width:620px;margin-top:15px}.danger-actions{display:flex;gap:10px}.v-btn{text-transform:none;letter-spacing:0}@media(max-width:980px){.appearance-layout{grid-template-columns:1fr}.preview-sticky{position:static}.preview-column{max-width:500px}}@media(max-width:700px){.kb-settings-page{padding:22px 16px 48px}.settings-header h1{font-size:21px}.settings-tabs{gap:22px;overflow-x:auto}.settings-panel{padding:22px 18px}.compact-grid,.theme-grid,.color-grid{grid-template-columns:1fr}.member-toolbar{grid-template-columns:1fr}.member-row{grid-template-columns:auto minmax(0,1fr) auto}.member-role{grid-column:2}.member-row>.v-btn{grid-column:3;grid-row:1/3}.merge-row{grid-template-columns:1fr}.danger-actions{align-items:stretch;flex-direction:column}.share-wrap :deep(.panel-title),.share-wrap :deep(.v-card-text){padding-right:18px!important;padding-left:18px!important}}
+.kb-settings-page{min-height:100vh;padding:34px 36px 72px;background:#f7f8fa;color:#262626}.settings-container{width:min(1080px,100%);margin:0 auto}.settings-header{margin-bottom:20px}.back-link{display:inline-flex;height:30px;align-items:center;gap:6px;margin-bottom:13px;color:#595959;font-size:13px;text-decoration:none}.back-link:hover{color:#1677ff}.settings-header h1{margin:0;font-size:24px;font-weight:600;line-height:34px;letter-spacing:-.02em}.settings-header p{margin:6px 0 0;color:#8a8f8d;font-size:14px}.page-alert{margin:0 0 14px}.page-progress{margin-bottom:10px}.settings-tabs{display:flex;height:46px;align-items:flex-end;gap:30px;border-bottom:1px solid #e7e9e8}.settings-tabs button{position:relative;height:46px;padding:0 2px;border:0;color:#595959;background:transparent;font:500 14px/46px inherit;cursor:pointer;white-space:nowrap}.settings-tabs button:hover{color:#262626}.settings-tabs button:disabled{cursor:default;opacity:.55}.settings-tabs button.active{color:#1677ff}.settings-tabs button.active::after{position:absolute;right:0;bottom:-1px;left:0;height:2px;border-radius:2px;background:#1677ff;content:""}.settings-stage{padding-top:20px}.settings-panel{overflow:hidden;border:1px solid #e7e9e8;border-radius:10px;padding:26px 30px 30px;background:#fff}.panel-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:24px}.panel-heading h2{margin:0;color:#262626;font-size:18px;font-weight:600;line-height:26px}.panel-heading p,.subsection-heading p,.advanced-heading p{margin:4px 0 0;color:#8a8f8d;font-size:13px;line-height:20px}.compact-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 18px}.description-field{margin-top:2px}.subsection{margin-top:8px;border-top:1px solid #eff0f0;padding-top:23px}.subsection-heading h3,.advanced-heading h3{margin:0;font-size:15px;font-weight:600}.setting-switch{display:flex;min-height:56px;align-items:center;justify-content:space-between;gap:18px;border-top:1px solid #eff0f0;padding:8px 2px}.setting-switch>div{display:flex;flex-direction:column}.setting-switch strong{font-size:14px;font-weight:500}.setting-switch span,.inline-hint{color:#8a8f8d;font-size:12px;line-height:18px}.setting-switch.compact{min-height:48px}.panel-actions{display:flex;justify-content:flex-end;margin-top:22px}.appearance-panel{overflow:visible}.appearance-layout{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:32px}.appearance-form{min-width:0}.config-section{border-top:1px solid #eff0f0;padding:23px 0}.config-section.first{border-top:0;padding-top:0}.theme-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px}.theme-option{display:grid;min-height:60px;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:10px;padding:9px 12px;border:1px solid #dfe2e1;border-radius:7px;color:#595959;background:#fff;font:inherit;text-align:left;cursor:pointer}.theme-option:hover{border-color:#b9bdba}.theme-option.selected{border-color:#7ba7f8;background:#f5f8ff;color:#245ec6}.theme-option span{display:flex;min-width:0;flex-direction:column}.theme-option strong{color:#262626;font-size:13px;font-weight:500}.theme-option small{margin-top:1px;color:#8a8f8d;font-size:11px}.color-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.setting-heading{display:flex;align-items:center;justify-content:space-between;gap:20px}.slider-label{display:flex;justify-content:space-between;margin:13px 0 4px;color:#595959;font-size:12px}.inline-hint{margin:8px 0}.preview-sticky{position:sticky;top:24px}.preview-heading{margin-bottom:8px;color:#8a8f8d;font-size:12px}.reader-preview{min-height:370px;display:flex;align-items:center;justify-content:center;overflow:hidden;border:1px solid #e7e9e8;border-radius:8px;padding:18px;background-position:center;background-size:cover}.preview-document{position:relative;width:100%;min-height:300px;overflow:hidden;border-radius:7px;padding:28px;background:rgba(255,255,255,.96);color:#1e293b;box-shadow:0 9px 30px rgba(15,23,42,.1)}.theme-minimal .preview-document{border-radius:1px;box-shadow:none}.theme-magazine .preview-document h2{font-family:Georgia,'Noto Serif SC',serif;font-size:1.65rem}.theme-dark .preview-document{background:rgba(17,24,39,.96);color:#e5e7eb}.preview-document small{color:var(--preview-accent);font-weight:700}.preview-document h2{margin:7px 0;font-size:1.45rem}.preview-document h3{margin:18px 0 6px;font-size:14px}.preview-document p{color:#64748b;font-size:12px;line-height:1.65}.theme-dark .preview-document p{color:#94a3b8}.preview-document a{color:var(--preview-accent);font-size:12px;font-weight:600}.preview-icon{display:block;margin-bottom:11px;font-size:1.65rem}.preview-rule{width:42px;height:2px;margin-top:18px;border-radius:9px;background:var(--preview-accent)}.preview-watermark{position:absolute;color:var(--preview-accent);font-size:11px;font-weight:700;pointer-events:none;white-space:nowrap}.preview-watermark.position-center{inset:50% auto auto 50%;transform:translate(-50%,-50%) rotate(-22deg)}.preview-watermark.position-footer{inset:auto 14px 11px auto}.preview-watermark.position-tiled{inset:48% auto auto 42%;transform:rotate(-22deg);text-shadow:-120px -95px currentColor,120px -95px currentColor,-120px 95px currentColor,120px 95px currentColor}.catalog-preview{margin-top:12px;border:1px solid #e7e9e8;border-radius:8px;padding:13px;background:#fafafa}.catalog-preview header{display:flex;align-items:center;gap:7px;margin-bottom:7px;font-size:12px}.catalog-preview header span{margin-left:auto;color:#8a8f8d;font-size:11px}.catalog-row{display:flex;min-height:30px;align-items:center;gap:7px;color:#595959;font-size:12px}.catalog-row.nested{padding-left:20px}.catalog-row span{display:flex;min-width:0;align-items:center;gap:7px}.catalog-row small{color:#a1a4a2}.count-label,.secondary-badge{border-radius:5px;padding:3px 7px;color:#8a8f8d;background:#f3f4f4;font-size:12px}.member-toolbar{display:grid;grid-template-columns:minmax(260px,1fr) 170px auto;align-items:center;gap:10px;margin-bottom:20px}.member-list{border-top:1px solid #eff0f0}.member-row{display:grid;min-height:58px;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:11px;border-bottom:1px solid #f2f3f3}.member-row>div{display:flex;min-width:0;flex-direction:column}.member-row strong{overflow:hidden;font-size:13px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}.member-row span{color:#8a8f8d;font-size:12px}.member-role{padding:3px 7px;border-radius:5px;background:#f3f4f4}.empty-members{padding:52px 20px;color:#8a8f8d;font-size:13px;text-align:center}.share-wrap :deep(.share-panel){border-color:#e7e9e8!important;border-radius:10px!important;box-shadow:none!important}.share-wrap :deep(.panel-title){padding:24px 28px 18px!important}.share-wrap :deep(.v-card-text){padding-right:28px!important;padding-left:28px!important}.ownership-section{max-width:720px}.ownership-actions{display:flex;justify-content:flex-end;margin-top:18px}.ownership-empty{display:flex;align-items:flex-start;gap:10px;margin:16px 0 0;padding:13px 14px;border:1px dashed #d9dcda;border-radius:7px;color:#8a8f8d;background:#fafafa}.ownership-empty strong{color:#595959;font-size:13px;font-weight:500}.ownership-empty p{margin:3px 0 0;font-size:12px;line-height:18px}.advanced-stack{display:grid;gap:16px}.advanced-section{border-top:1px solid #eff0f0;padding:24px 0 2px}.advanced-section:first-of-type{border-top:0;padding-top:0}.advanced-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.current-owner{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:12px;margin:15px 0;padding:13px 14px;border:1px solid #e7e9e8;border-radius:7px;background:#fafafa}.current-owner>div{display:flex;min-width:0;flex-direction:column}.current-owner small{color:#8a8f8d;font-size:11px}.current-owner strong{margin:1px 0;color:#262626;font-size:13px;font-weight:500}.current-owner span{color:#8a8f8d;font-size:12px}.owner-select{max-width:620px;margin-top:15px}.owner-selection{display:flex;align-items:center}.merge-row{display:grid;grid-template-columns:minmax(0,620px) auto;align-items:center;gap:10px;margin-top:15px}.danger-section h3{color:#d93026}.confirm-field{max-width:620px;margin-top:15px}.danger-actions{display:flex;gap:10px}.v-btn{text-transform:none;letter-spacing:0}@media(max-width:980px){.appearance-layout{grid-template-columns:1fr}.preview-sticky{position:static}.preview-column{max-width:500px}}@media(max-width:700px){.kb-settings-page{padding:22px 16px 48px}.settings-header h1{font-size:21px}.settings-tabs{gap:22px;overflow-x:auto}.settings-panel{padding:22px 18px}.compact-grid,.theme-grid,.color-grid{grid-template-columns:1fr}.member-toolbar{grid-template-columns:1fr}.member-row{grid-template-columns:auto minmax(0,1fr) auto}.member-role{grid-column:2}.member-row>.v-btn{grid-column:3;grid-row:1/3}.merge-row{grid-template-columns:1fr}.danger-actions{align-items:stretch;flex-direction:column}.share-wrap :deep(.panel-title),.share-wrap :deep(.v-card-text){padding-right:18px!important;padding-left:18px!important}}
 </style>

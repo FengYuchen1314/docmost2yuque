@@ -86,6 +86,9 @@ const operationError = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
 const existingSensitiveData = ref<Record<string, unknown> | null>(null)
 const originalIdentity = ref<{ instanceId: string; version: number } | null>(null)
+let formContextVersion = 0
+let uploadSequence = 0
+let submitSequence = 0
 
 const availableDefinitions = computed(() => {
   if (!props.allowedKinds.length) return props.definitions
@@ -106,6 +109,11 @@ const sensitiveEncryptionRequired = computed(() => form.kind === 'sensitive-text
 const sensitiveEncryptionUnavailable = computed(() => sensitiveEncryptionRequired.value && !sensitiveCryptoAvailable.value)
 const validationMessage = computed(() => validateForm())
 const pending = computed(() => props.busy || submitting.value || uploading.value)
+const initialCardIdentity = computed(() => {
+  if (props.initialCard == null) return 'new-card'
+  const card = normalizeContentCard(props.initialCard)
+  return stableIdentity({ cardId: card.cardId, instanceId: card.instanceId, version: card.version, data: card.data })
+})
 
 watch(() => props.modelValue, (open) => {
   if (open) resetFromInitial()
@@ -123,6 +131,7 @@ function blankForm(): PaletteForm {
 }
 
 function resetFromInitial() {
+  formContextVersion += 1
   Object.assign(form, blankForm())
   operationError.value = ''
   touched.value = false
@@ -161,6 +170,8 @@ function resetFromInitial() {
 }
 
 function chooseKind(kind: PaletteKind) {
+  if (pending.value) return
+  formContextVersion += 1
   form.kind = kind
   operationError.value = ''
   touched.value = false
@@ -188,42 +199,77 @@ async function handleFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file || !props.uploadHandler || !uploadable.value) return
+  if (!file || !props.uploadHandler || !uploadable.value || uploading.value) return
   const kind = form.kind as 'attachment' | 'image' | 'video'
+  const uploadHandler = props.uploadHandler
+  const contextVersion = formContextVersion
+  const sourceIdentity = initialCardIdentity.value
+  const sequence = ++uploadSequence
   const uploadEvent = { kind, file }
   uploading.value = true
   operationError.value = ''
   emit('upload-start', uploadEvent)
   try {
-    const asset = await props.uploadHandler(file, kind)
+    const asset = await uploadHandler(file, kind)
+    if (!isCurrentUpload(sequence, contextVersion, sourceIdentity, kind, uploadHandler)) return
     if (!safeResourceUrl(asset.url)) throw new Error('上传接口返回了不安全的文件地址')
     form.url = asset.url
-    form.name = asset.name || file.name
-    form.size = typeof asset.size === 'number' ? asset.size : file.size
-    form.mimeType = asset.mimeType || file.type
-    if (kind === 'image' && !form.alt) form.alt = asset.name || file.name
-    if (kind === 'video' && asset.poster) form.poster = asset.poster
+    if (kind === 'attachment') {
+      form.name = asset.name || file.name
+      form.size = typeof asset.size === 'number' ? asset.size : file.size
+      form.mimeType = asset.mimeType || file.type
+    } else if (kind === 'image' && !form.alt) {
+      form.alt = asset.name || file.name
+    } else if (kind === 'video' && asset.poster) {
+      form.poster = asset.poster
+    }
     emit('upload-complete', { ...uploadEvent, asset })
   } catch (reason) {
+    if (!isCurrentUpload(sequence, contextVersion, sourceIdentity, kind, uploadHandler)) return
     operationError.value = reason instanceof Error ? reason.message : '文件上传失败'
     emitError('upload', reason, operationError.value)
   } finally {
-    uploading.value = false
+    if (sequence === uploadSequence) uploading.value = false
   }
+}
+
+function isCurrentUpload(
+  sequence: number,
+  contextVersion: number,
+  sourceIdentity: string,
+  kind: 'attachment' | 'image' | 'video',
+  uploadHandler: ContentCardUploadHandler,
+) {
+  return sequence === uploadSequence
+    && contextVersion === formContextVersion
+    && sourceIdentity === initialCardIdentity.value
+    && form.kind === kind
+    && props.modelValue
+    && props.uploadHandler === uploadHandler
 }
 
 async function submit() {
   touched.value = true
   operationError.value = ''
   if (validationMessage.value || pending.value) return
+  const sequence = ++submitSequence
+  const contextVersion = formContextVersion
+  const sourceIdentity = initialCardIdentity.value
+  const kind = form.kind
+  const definition = { ...selectedDefinition.value }
+  const definitionIdentity = stableIdentity(definition)
+  const identity = originalIdentity.value ? { ...originalIdentity.value } : null
+  const formSnapshot = { ...form }
+  const existingSensitiveSnapshot = existingSensitiveData.value ? { ...existingSensitiveData.value } : null
+  const closeOnInsert = props.closeOnInsert
   submitting.value = true
   try {
-    const definition = selectedDefinition.value
-    const data = await createData()
-    const node = createContentCardNode(definition.cardId, data, originalIdentity.value ?? undefined)
+    const data = await createData(formSnapshot, existingSensitiveSnapshot)
+    if (!isCurrentSubmit(sequence, contextVersion, sourceIdentity, kind, definitionIdentity, identity)) return
+    const node = createContentCardNode(definition.cardId, data, identity ?? undefined)
     const card = normalizeContentCard(node)
     const payload: ContentCardCreateEvent = {
-      kind: definition.kind,
+      kind,
       card,
       node,
       token: encodeContentCardToken(node),
@@ -232,32 +278,57 @@ async function submit() {
     form.password = ''
     form.passwordConfirm = ''
     form.plaintext = ''
-    if (props.closeOnInsert) emit('update:modelValue', false)
+    if (closeOnInsert) emit('update:modelValue', false)
   } catch (reason) {
+    if (!isCurrentSubmit(sequence, contextVersion, sourceIdentity, kind, definitionIdentity, identity)) return
     operationError.value = reason instanceof Error ? reason.message : '无法创建内容卡'
     emitError('create', reason, operationError.value)
   } finally {
-    submitting.value = false
+    if (sequence === submitSequence) submitting.value = false
   }
 }
 
-async function createData(): Promise<Record<string, unknown>> {
-  if (form.kind === 'bookmark') return clean({ url: form.url, title: form.title, description: form.description, siteName: form.siteName })
-  if (form.kind === 'code') return clean({ language: form.language, code: form.code, title: form.title })
-  if (form.kind === 'attachment') return clean({ url: form.url, name: form.name, size: form.size, mimeType: form.mimeType, description: form.description })
-  if (form.kind === 'image') return clean({ url: form.url, alt: form.alt, caption: form.caption, width: form.width })
-  if (form.kind === 'video') return clean({ url: form.url, poster: form.poster, title: form.title, caption: form.caption })
-  if (form.kind === 'iframe') return clean({ url: form.url, title: form.title, height: form.height })
-  if (form.kind === 'callout') return clean({ tone: form.tone, title: form.title, text: form.text })
-  if (form.kind === 'status') return clean({ value: form.status, label: form.label, description: form.description })
-  if (hasExistingSensitive.value && !form.plaintext) return { ...existingSensitiveData.value!, hint: form.hint }
-  return encryptSensitiveCard(form.plaintext, form.password, form.hint)
+function isCurrentSubmit(
+  sequence: number,
+  contextVersion: number,
+  sourceIdentity: string,
+  kind: PaletteKind,
+  definitionIdentity: string,
+  identity: { instanceId: string; version: number } | null,
+) {
+  const currentIdentity = originalIdentity.value
+  const sameOriginalIdentity = identity === null
+    ? currentIdentity === null
+    : Boolean(currentIdentity && currentIdentity.instanceId === identity.instanceId && currentIdentity.version === identity.version)
+  return sequence === submitSequence
+    && contextVersion === formContextVersion
+    && sourceIdentity === initialCardIdentity.value
+    && form.kind === kind
+    && definitionIdentity === stableIdentity(selectedDefinition.value)
+    && sameOriginalIdentity
+    && props.modelValue
+}
+
+async function createData(
+  snapshot: PaletteForm,
+  existingSensitive: Record<string, unknown> | null,
+): Promise<Record<string, unknown>> {
+  if (snapshot.kind === 'bookmark') return clean({ url: snapshot.url, title: snapshot.title, description: snapshot.description, siteName: snapshot.siteName })
+  if (snapshot.kind === 'code') return clean({ language: snapshot.language, code: snapshot.code, title: snapshot.title })
+  if (snapshot.kind === 'attachment') return clean({ url: snapshot.url, name: snapshot.name, size: snapshot.size, mimeType: snapshot.mimeType, description: snapshot.description })
+  if (snapshot.kind === 'image') return clean({ url: snapshot.url, alt: snapshot.alt, caption: snapshot.caption, width: snapshot.width })
+  if (snapshot.kind === 'video') return clean({ url: snapshot.url, poster: snapshot.poster, title: snapshot.title, caption: snapshot.caption })
+  if (snapshot.kind === 'iframe') return clean({ url: snapshot.url, title: snapshot.title, height: snapshot.height })
+  if (snapshot.kind === 'callout') return clean({ tone: snapshot.tone, title: snapshot.title, text: snapshot.text })
+  if (snapshot.kind === 'status') return clean({ value: snapshot.status, label: snapshot.label, description: snapshot.description })
+  if (existingSensitive && !snapshot.plaintext) return { ...existingSensitive, hint: snapshot.hint }
+  return encryptSensitiveCard(snapshot.plaintext, snapshot.password, snapshot.hint)
 }
 
 function validateForm(): string {
   if (!availableDefinitions.value.length) return '没有可用的内容卡类型'
   if (['bookmark', 'attachment', 'image', 'video', 'iframe'].includes(form.kind) && !safeResourceUrl(form.url)) {
-    return '请输入本站相对路径或有效的 HTTPS 地址'
+    return '请输入本站相对路径，或不含账号凭据的 HTTP/HTTPS 地址'
   }
   if (form.kind === 'code' && !form.code.trim()) return '请输入代码内容'
   if (form.kind === 'callout' && !form.text.trim()) return '请输入提示内容'
@@ -283,6 +354,21 @@ function clean(value: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== '' && item !== null && typeof item !== 'undefined'))
 }
 
+function stableIdentity(value: unknown, seen = new WeakSet<object>()): string {
+  if (value === null) return 'null'
+  if (typeof value === 'string') return `string:${JSON.stringify(value)}`
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return `${typeof value}:${String(value)}`
+  if (typeof value === 'undefined') return 'undefined'
+  if (typeof value !== 'object') return `${typeof value}:${String(value)}`
+  if (seen.has(value)) return '[circular]'
+  seen.add(value)
+  const result = Array.isArray(value)
+    ? `[${value.map((item) => stableIdentity(item, seen)).join(',')}]`
+    : `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${stableIdentity((value as Record<string, unknown>)[key], seen)}`).join(',')}}`
+  seen.delete(value)
+  return result
+}
+
 function field(value: Record<string, unknown>, key: string): string {
   const item = value[key]
   return typeof item === 'string' ? item : ''
@@ -305,12 +391,12 @@ function statusValue(value: unknown): PaletteForm['status'] {
 </script>
 
 <template>
-  <v-dialog :model-value="modelValue" max-width="920" scrollable persistent @update:model-value="updateOpen">
-    <v-card class="content-card-palette">
+  <v-dialog :model-value="modelValue" max-width="720" scrollable :persistent="pending" @update:model-value="updateOpen">
+    <v-card class="content-card-palette" :aria-busy="pending ? 'true' : undefined" data-testid="content-card-palette">
       <v-card-title class="palette-header">
         <div>
           <div class="palette-header__title">插入内容卡</div>
-          <div class="palette-header__subtitle">把常用内容变成结构化、可迁移的文档组件</div>
+          <div class="palette-header__subtitle">选择类型并填写内容</div>
         </div>
         <v-btn icon="mdi-close" aria-label="关闭内容卡面板" variant="text" :disabled="pending" @click="requestClose" />
       </v-card-title>
@@ -325,10 +411,11 @@ function statusValue(value: unknown): PaletteForm['status'] {
             class="palette-type"
             :class="{ 'palette-type--active': form.kind === definition.kind }"
             :aria-pressed="form.kind === definition.kind"
+            :disabled="pending"
             @click="chooseKind(definition.kind)"
           >
-            <v-avatar :color="definition.color" variant="tonal" size="36" rounded="lg">
-              <v-icon :icon="definition.icon" size="20" />
+            <v-avatar :color="definition.color" variant="tonal" size="30" rounded="sm">
+              <v-icon :icon="definition.icon" size="17" />
             </v-avatar>
             <span><strong>{{ definition.title }}</strong><small>{{ definition.description }}</small></span>
           </button>
@@ -336,12 +423,13 @@ function statusValue(value: unknown): PaletteForm['status'] {
 
         <v-form class="palette-form" @submit.prevent="submit">
           <div class="palette-form__heading">
-            <v-avatar :color="selectedDefinition.color" variant="tonal" rounded="lg" size="40">
-              <v-icon :icon="selectedDefinition.icon" />
+            <v-avatar :color="selectedDefinition.color" variant="tonal" rounded="sm" size="32">
+              <v-icon :icon="selectedDefinition.icon" size="18" />
             </v-avatar>
             <div><strong>{{ selectedDefinition.title }}</strong><p>{{ selectedDefinition.description }}</p></div>
           </div>
 
+          <fieldset class="palette-form__fields" :disabled="pending">
           <template v-if="form.kind === 'bookmark'">
             <v-text-field v-model="form.url" label="网页地址" placeholder="https://example.com/article" autofocus />
             <v-text-field v-model="form.title" label="标题（可选）" />
@@ -359,25 +447,25 @@ function statusValue(value: unknown): PaletteForm['status'] {
 
           <template v-else-if="form.kind === 'attachment'">
             <div class="palette-form__url-row">
-              <v-text-field v-model="form.url" label="附件地址" placeholder="/api/files/... 或 https://..." />
-              <v-btn prepend-icon="mdi-upload" variant="tonal" :loading="uploading" @click="chooseFile">上传</v-btn>
+              <v-text-field v-model="form.url" label="附件地址" placeholder="/api/files/... 或 https://..." :disabled="pending" />
+              <v-btn prepend-icon="mdi-upload" variant="tonal" :loading="uploading" :disabled="pending" @click="chooseFile">上传</v-btn>
             </div>
-            <v-text-field v-model="form.name" label="文件名" />
+            <v-text-field v-model="form.name" label="文件名" :disabled="pending" />
             <div class="palette-form__row">
-              <v-text-field v-model.number="form.size" label="文件大小（字节，可选）" type="number" min="0" />
-              <v-text-field v-model="form.mimeType" label="MIME 类型（可选）" placeholder="application/pdf" />
+              <v-text-field v-model.number="form.size" label="文件大小（字节，可选）" type="number" min="0" :disabled="pending" />
+              <v-text-field v-model="form.mimeType" label="MIME 类型（可选）" placeholder="application/pdf" :disabled="pending" />
             </div>
-            <v-textarea v-model="form.description" label="说明（可选）" rows="2" />
+            <v-textarea v-model="form.description" label="说明（可选）" rows="2" :disabled="pending" />
           </template>
 
           <template v-else-if="form.kind === 'image'">
             <div class="palette-form__url-row">
-              <v-text-field v-model="form.url" label="图片地址" placeholder="/api/files/... 或 https://..." />
-              <v-btn prepend-icon="mdi-upload" variant="tonal" :loading="uploading" @click="chooseFile">上传</v-btn>
+              <v-text-field v-model="form.url" label="图片地址" placeholder="/api/files/... 或 https://..." :disabled="pending" />
+              <v-btn prepend-icon="mdi-upload" variant="tonal" :loading="uploading" :disabled="pending" @click="chooseFile">上传</v-btn>
             </div>
-            <v-text-field v-model="form.alt" label="替代文字" hint="用于无障碍阅读和图片加载失败时展示" persistent-hint />
-            <v-text-field v-model="form.caption" label="图片说明（可选）" />
-            <v-select v-model="form.width" label="显示宽度" :items="[
+            <v-text-field v-model="form.alt" label="替代文字" hint="用于无障碍阅读和图片加载失败时展示" persistent-hint :disabled="pending" />
+            <v-text-field v-model="form.caption" label="图片说明（可选）" :disabled="pending" />
+            <v-select v-model="form.width" label="显示宽度" :disabled="pending" :items="[
               { title: '小（320px）', value: 'SMALL' }, { title: '中（560px）', value: 'MEDIUM' },
               { title: '大（880px）', value: 'LARGE' }, { title: '铺满容器', value: 'FULL' },
             ]" />
@@ -385,12 +473,12 @@ function statusValue(value: unknown): PaletteForm['status'] {
 
           <template v-else-if="form.kind === 'video'">
             <div class="palette-form__url-row">
-              <v-text-field v-model="form.url" label="视频直链" placeholder="HTTPS MP4/WebM 地址" />
-              <v-btn prepend-icon="mdi-upload" variant="tonal" :loading="uploading" @click="chooseFile">上传</v-btn>
+              <v-text-field v-model="form.url" label="视频直链" placeholder="HTTPS MP4/WebM 地址" :disabled="pending" />
+              <v-btn prepend-icon="mdi-upload" variant="tonal" :loading="uploading" :disabled="pending" @click="chooseFile">上传</v-btn>
             </div>
-            <v-text-field v-model="form.poster" label="封面地址（可选）" />
-            <v-text-field v-model="form.title" label="视频标题" />
-            <v-text-field v-model="form.caption" label="说明（可选）" />
+            <v-text-field v-model="form.poster" label="封面地址（可选）" :disabled="pending" />
+            <v-text-field v-model="form.title" label="视频标题" :disabled="pending" />
+            <v-text-field v-model="form.caption" label="说明（可选）" :disabled="pending" />
           </template>
 
           <template v-else-if="form.kind === 'iframe'">
@@ -442,15 +530,16 @@ function statusValue(value: unknown): PaletteForm['status'] {
             </template>
           </template>
 
-          <input ref="fileInput" class="sr-only" type="file" :accept="uploadAccept" tabindex="-1" @change="handleFile">
+          <input ref="fileInput" class="sr-only" type="file" :accept="uploadAccept" :disabled="pending" tabindex="-1" @change="handleFile">
           <v-alert v-if="operationError" type="error" variant="tonal" density="compact">{{ operationError }}</v-alert>
           <v-alert v-else-if="touched && validationMessage" type="warning" variant="tonal" density="compact">{{ validationMessage }}</v-alert>
+          </fieldset>
         </v-form>
       </v-card-text>
 
       <v-divider />
       <v-card-actions class="palette-actions">
-        <span class="palette-actions__hint">将写入结构化 JSON；也可使用兼容 token。</span>
+        <span class="palette-actions__hint">插入后可选中卡片继续修改</span>
         <v-spacer />
         <v-btn variant="text" :disabled="pending" @click="requestClose">取消</v-btn>
         <v-btn color="primary" prepend-icon="mdi-plus" :loading="submitting" :disabled="pending || sensitiveEncryptionUnavailable" @click="submit">
@@ -462,35 +551,51 @@ function statusValue(value: unknown): PaletteForm['status'] {
 </template>
 
 <style scoped>
-.content-card-palette { overflow: hidden; }
-.palette-header { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px; }
-.palette-header__title { font-size: 1.08rem; font-weight: 750; }
-.palette-header__subtitle { margin-top: 2px; color: rgb(var(--v-theme-secondary)); font-size: .8rem; font-weight: 400; }
-.palette-content { display: grid; grid-template-columns: 245px minmax(0, 1fr); min-height: 520px; max-height: min(72vh, 720px); padding: 0 !important; }
-.palette-types { overflow-y: auto; border-right: 1px solid rgba(var(--v-border-color), .5); padding: 10px; background: rgba(var(--v-theme-on-surface), .018); }
-.palette-type { display: flex; width: 100%; align-items: center; gap: 10px; border: 1px solid transparent; border-radius: 12px; padding: 9px; background: transparent; color: inherit; cursor: pointer; text-align: left; transition: .15s ease; }
-.palette-type:hover { background: rgba(var(--v-theme-primary), .05); }
-.palette-type--active { border-color: rgba(var(--v-theme-primary), .3); background: rgba(var(--v-theme-primary), .085); }
+.content-card-palette { overflow: hidden; border: 1px solid #e7e9e8; border-radius: 8px !important; background: #fff; box-shadow: 0 12px 36px rgba(0, 0, 0, .14) !important; }
+.palette-header { display: flex; min-height: 56px; align-items: center; justify-content: space-between; padding: 8px 12px 8px 16px; }
+.palette-header :deep(.v-btn) { width: 32px; height: 32px; color: #595959; }
+.palette-header__title { color: #262626; font-size: 16px; font-weight: 600; line-height: 24px; }
+.palette-header__subtitle { color: #8c8c8c; font-size: 12px; font-weight: 400; line-height: 18px; }
+.palette-content { display: grid; grid-template-columns: 176px minmax(0, 1fr); min-height: 460px; max-height: min(72vh, 620px); padding: 0 !important; }
+.palette-types { overflow-y: auto; border-right: 1px solid #ededed; padding: 8px; background: #fafafa; scrollbar-width: thin; }
+.palette-type { display: flex; width: 100%; min-height: 46px; align-items: center; gap: 8px; border: 1px solid transparent; border-radius: 6px; padding: 6px 7px; background: transparent; color: #262626; cursor: pointer; text-align: left; transition: background-color 120ms ease, border-color 120ms ease; }
+.palette-type + .palette-type { margin-top: 2px; }
+.palette-type:hover { background: #f0f0f0; }
+.palette-type:disabled { cursor: not-allowed; opacity: .58; }
+.palette-type:focus-visible { border-color: #85a5ff; outline: 2px solid rgba(47, 104, 246, .14); outline-offset: 1px; }
+.palette-type--active { border-color: #adc6ff; background: #eef3ff; color: #2457d6; }
+.palette-type--active:hover { background: #e7efff; }
+.palette-type :deep(.v-avatar) { flex: 0 0 auto; border-radius: 6px !important; }
 .palette-type > span { display: flex; min-width: 0; flex-direction: column; }
-.palette-type strong { font-size: .86rem; line-height: 1.35; }
-.palette-type small { overflow: hidden; color: rgb(var(--v-theme-secondary)); font-size: .7rem; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-.palette-form { display: flex; min-width: 0; flex-direction: column; gap: 14px; overflow-y: auto; padding: 20px; }
-.palette-form__heading { display: flex; align-items: center; gap: 11px; margin-bottom: 2px; }
-.palette-form__heading strong { display: block; }
-.palette-form__heading p { margin: 2px 0 0; color: rgb(var(--v-theme-secondary)); font-size: .79rem; }
-.palette-form__row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.palette-form__url-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 10px; }
-.palette-form__url-row .v-btn { margin-top: 4px; }
-.palette-slider label { display: block; margin-bottom: 4px; color: rgb(var(--v-theme-secondary)); font-size: .8rem; }
+.palette-type strong { overflow: hidden; font-size: 13px; font-weight: 500; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; }
+.palette-type small { overflow: hidden; color: #8c8c8c; font-size: 11px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
+.palette-form { display: flex; min-width: 0; flex-direction: column; gap: 10px; overflow-y: auto; padding: 14px 16px 16px; scrollbar-width: thin; }
+.palette-form__fields { display: flex; min-width: 0; flex-direction: column; gap: 10px; margin: 0; border: 0; padding: 0; }
+.palette-form__heading { display: flex; min-height: 40px; align-items: center; gap: 9px; margin-bottom: 2px; }
+.palette-form__heading :deep(.v-avatar) { border-radius: 6px !important; }
+.palette-form__heading strong { display: block; color: #262626; font-size: 14px; font-weight: 600; line-height: 20px; }
+.palette-form__heading p { margin: 0; color: #8c8c8c; font-size: 12px; line-height: 18px; }
+.palette-form__row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.palette-form__url-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; }
+.palette-form__url-row .v-btn { height: 40px; margin-top: 0; border-radius: 6px; }
+.palette-form :deep(.v-field) { border-radius: 6px; font-size: 13px; }
+.palette-form :deep(.v-field__input) { min-height: 40px; padding-top: 7px; padding-bottom: 7px; }
+.palette-form :deep(.v-input__details) { min-height: 18px; padding-top: 2px; font-size: 11px; }
+.palette-form :deep(.v-alert) { border-radius: 6px; font-size: 12px; line-height: 18px; }
+.palette-slider label { display: block; margin-bottom: 2px; color: #8c8c8c; font-size: 12px; line-height: 18px; }
 .code-input :deep(textarea) { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; line-height: 1.55; }
-.palette-actions { min-height: 66px; padding: 10px 18px; }
-.palette-actions__hint { color: rgb(var(--v-theme-secondary)); font-size: .75rem; }
+.palette-actions { min-height: 52px; padding: 7px 10px 7px 16px; }
+.palette-actions :deep(.v-btn) { height: 34px; border-radius: 6px; font-size: 13px; letter-spacing: 0; }
+.palette-actions__hint { color: #8c8c8c; font-size: 12px; line-height: 18px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); }
 @media (max-width: 700px) {
+  .content-card-palette { border-radius: 0 !important; }
+  .palette-header { min-height: 52px; }
   .palette-content { display: block; }
-  .palette-types { display: flex; max-width: 100%; overflow-x: auto; border-right: 0; border-bottom: 1px solid rgba(var(--v-border-color), .5); }
-  .palette-type { min-width: 132px; }
+  .palette-types { display: flex; max-width: 100%; overflow-x: auto; border-right: 0; border-bottom: 1px solid #ededed; padding: 6px 8px; }
+  .palette-type { min-width: 112px; min-height: 38px; }
   .palette-type small { display: none; }
+  .palette-form { max-height: calc(100vh - 154px); padding: 12px; }
   .palette-form__row { grid-template-columns: 1fr; }
   .palette-actions__hint { display: none; }
 }

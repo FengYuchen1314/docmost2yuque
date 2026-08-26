@@ -32,7 +32,7 @@ const settingsTabs: Array<{ value: PageManagementTab; title: string; icon: strin
   { value: 'HISTORY', title: '版本历史', icon: 'mdi-history' },
 ]
 const compactMode = computed(() => tab.value === 'SHARE' || tab.value === 'PUBLISH')
-const compactTitle = computed(() => tab.value === 'SHARE' ? '分享文档' : '发布文档')
+const compactTitle = computed(() => tab.value === 'SHARE' ? '分享' : '发布')
 
 watch(() => props.page, (value) => { currentPage.value = value })
 watch(() => props.modelValue, (open) => {
@@ -62,7 +62,7 @@ function deleted() {
   <v-dialog
     v-if="compactMode"
     :model-value="modelValue"
-    :max-width="tab === 'SHARE' ? 760 : 720"
+    :max-width="tab === 'SHARE' ? 680 : 640"
     scrollable
     @update:model-value="value => { if (!value) close() }"
   >
@@ -85,12 +85,12 @@ function deleted() {
     :model-value="modelValue"
     location="right"
     temporary
-    width="620"
+    width="600"
     class="page-settings-drawer"
     @update:model-value="value => { if (!value) close() }"
   >
     <header class="settings-drawer-header">
-      <div class="management-title"><strong>文档设置</strong><small>{{ currentPage.title }} · 草稿 v{{ currentPage.draftRevision }} · {{ contentTypeLabel(currentPage.contentType) }}</small></div>
+      <div class="management-title"><strong>{{ currentPage.title }}</strong><small>文档设置 · 草稿 v{{ currentPage.draftRevision }} · {{ contentTypeLabel(currentPage.contentType) }}</small></div>
       <v-spacer />
       <v-btn icon="mdi-close" variant="text" size="small" aria-label="关闭文档设置" @click="close" />
     </header>
@@ -107,24 +107,24 @@ function deleted() {
 </template>
 
 <style scoped>
-.compact-management-dialog { max-height: min(84vh, 760px); overflow: hidden; border: 1px solid #e7e9e8; border-radius: 8px !important; box-shadow: 0 16px 44px rgba(0,0,0,.12) !important; }
-.compact-dialog-header { display: flex; min-height: 58px; align-items: center; padding: 0 16px 0 20px; }
+.compact-management-dialog { max-height: min(86vh, 720px); overflow: hidden; border: 1px solid #e7e9e8; border-radius: 8px !important; box-shadow: 0 16px 44px rgba(0,0,0,.12) !important; }
+.compact-dialog-header { display: flex; min-height: 52px; align-items: center; padding: 0 10px 0 18px; }
 .compact-dialog-header>div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
-.compact-dialog-header strong { font-size: 16px; font-weight: 650; }
+.compact-dialog-header strong { font-size: 15px; font-weight: 650; }
 .compact-dialog-header span { overflow: hidden; max-width: 560px; color: #8a8f8d; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.compact-management-content { overflow-y: auto; padding: 18px 20px 28px; }
+.compact-management-content { overflow-y: auto; padding: 16px 18px 24px; }
 .page-settings-drawer { border-left: 1px solid #e7e9e8 !important; background: #fff !important; }
-.settings-drawer-header { display: flex; min-height: 60px; align-items: center; border-bottom: 1px solid #f0f0f0; padding: 0 14px 0 20px; }
+.settings-drawer-header { display: flex; min-height: 52px; align-items: center; border-bottom: 1px solid #f0f0f0; padding: 0 10px 0 18px; }
 .management-title { display: flex; min-width: 0; flex-direction: column; line-height: 1.25; }
-.management-title strong { overflow: hidden; max-width: 480px; font-size: 16px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.management-title strong { overflow: hidden; max-width: 480px; font-size: 15px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .management-title small { overflow: hidden; max-width: 480px; margin-top: 4px; color: #8a8f8d; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.settings-tabs { display: flex; height: 43px; align-items: stretch; gap: 16px; border-bottom: 1px solid #f0f0f0; padding: 0 20px; }
+.settings-tabs { display: flex; height: 40px; align-items: stretch; gap: 18px; border-bottom: 1px solid #f0f0f0; padding: 0 18px; }
 .settings-tabs button { position: relative; display: flex; align-items: center; gap: 5px; border: 0; background: transparent; color: #585a59; font: 13px/1 -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif; cursor: pointer; }
 .settings-tabs button::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; border-radius: 2px 2px 0 0; background: transparent; content: ''; }
 .settings-tabs button:hover { color: #262626; }
 .settings-tabs button.active { color: #2f6feb; font-weight: 600; }
 .settings-tabs button.active::after { background: #2f6feb; }
-.settings-drawer-content { height: calc(100% - 103px); overflow-y: auto; padding: 20px 22px 42px; }
+.settings-drawer-content { height: calc(100% - 92px); overflow-y: auto; padding: 16px 18px 36px; }
 .compact-management-content :deep(.v-card),
 .settings-drawer-content :deep(.v-card) { border-radius: 6px !important; box-shadow: none !important; }
 .compact-management-content :deep(.v-alert),

@@ -7,9 +7,9 @@ const administrator = {
 }
 
 test.describe('Vue editor geometry at the Yuque desktop reference viewport', () => {
-  test.use({ viewport: { width: 1440, height: 900 }, colorScheme: 'light' })
+  test.use({ viewport: { width: 1280, height: 720 }, colorScheme: 'light' })
 
-  test('keeps the 52px page header and 42px document toolbar in one 1440x900 focus shell', async ({ page, request }) => {
+  test('matches the measured Yuque editor rails, header, toolbar, canvas and outline', async ({ page, request }) => {
     const statusResponse = await request.get('/api/v1/setup/status')
     expect(statusResponse.ok()).toBeTruthy()
     const setup = await statusResponse.json() as { initialized: boolean }
@@ -50,11 +50,13 @@ test.describe('Vue editor geometry at the Yuque desktop reference viewport', () 
     const toolbar = await visibleBox(page.locator('.editor-toolbar'))
     const canvas = await visibleBox(page.locator('.document-canvas'))
     const outline = await visibleBox(page.locator('aside[aria-label="文稿大纲"]'))
+    const catalog = await visibleBox(page.locator('aside[aria-label="知识库目录"]'))
 
-    expect(roundedBox(header)).toMatchObject({ x: 0, y: 0, width: 1440, height: 52 })
-    expect(roundedBox(toolbar)).toMatchObject({ x: 0, y: 52, width: 1440, height: 42 })
-    expect(Math.round(canvas.width)).toBe(750)
-    expect(roundedBox(outline)).toMatchObject({ y: 94, width: 196 })
+    expect(roundedBox(catalog)).toMatchObject({ x: 0, y: 0, width: 259, height: 720 })
+    expect(roundedBox(header)).toMatchObject({ x: 259, y: 0, width: 960, height: 52 })
+    expect(roundedBox(toolbar)).toMatchObject({ x: 259, y: 52, width: 960, height: 42 })
+    expect(roundedBox(canvas)).toMatchObject({ x: 329, y: 146, width: 530 })
+    expect(roundedBox(outline)).toMatchObject({ x: 914, y: 94, width: 305 })
 
     const geometry = await page.evaluate(() => ({
       viewport: { width: innerWidth, height: innerHeight },
@@ -63,11 +65,11 @@ test.describe('Vue editor geometry at the Yuque desktop reference viewport', () 
       toolbarHeight: getComputedStyle(document.querySelector<HTMLElement>('.editor-toolbar')!).height,
     }))
     expect(geometry).toMatchObject({
-      viewport: { width: 1440, height: 900 },
+      viewport: { width: 1280, height: 720 },
       headerHeight: '52px',
       toolbarHeight: '42px',
     })
-    expect(geometry.scrollWidth).toBeLessThanOrEqual(1440)
+    expect(geometry.scrollWidth).toBeLessThanOrEqual(1280)
   })
 })
 

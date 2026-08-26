@@ -258,7 +258,7 @@ export function safeResourceUrl(value: unknown): string | null {
   if (url.startsWith('/') && !url.startsWith('//') && !url.startsWith('/\\')) return url
   try {
     const parsed = new URL(url)
-    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return null
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return null
     return parsed.href
   } catch {
     return null

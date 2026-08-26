@@ -19,6 +19,7 @@ const teams = ref<Team[]>([])
 const loading = ref(false)
 const working = ref(false)
 const error = ref('')
+const loadFailed = ref(false)
 
 const subjectType = ref<SubjectType>('USER')
 const subjectId = ref<string | null>(null)
@@ -26,6 +27,7 @@ const role = ref<'READER' | 'EDITOR' | 'MANAGER'>('READER')
 const effect = ref<Effect>('ALLOW')
 const grantConfirmOpen = ref(false)
 const revokeTarget = ref<AclEntry | null>(null)
+let permissionsRequestVersion = 0
 
 const canManage = computed(() => decision.value?.capabilities.includes('MANAGE_PERMISSIONS') ?? false)
 const subjectItems = computed(() => {
@@ -36,79 +38,104 @@ const subjectItems = computed(() => {
 })
 const highImpactGrant = computed(() => subjectType.value === 'PUBLIC' || effect.value === 'DENY' || role.value === 'MANAGER')
 
-watch(() => props.page.id, () => void loadAll(), { immediate: true })
+watch(() => props.page.id, () => {
+  grantConfirmOpen.value = false
+  revokeTarget.value = null
+  subjectId.value = null
+  void loadAll()
+}, { immediate: true })
 
 async function loadAll() {
+  const pageId = props.page.id
+  const workspaceId = props.page.workspaceId
+  const version = ++permissionsRequestVersion
   loading.value = true
   error.value = ''
+  loadFailed.value = false
+  decision.value = null
+  entries.value = []
+  members.value = []
+  groups.value = []
+  teams.value = []
+  grantConfirmOpen.value = false
+  revokeTarget.value = null
   try {
-    decision.value = await post<AuthorizationDecision>('/api/v1/authorization/resolve', { resourceType: 'PAGE', resourceId: props.page.id })
-    if (decision.value.capabilities.includes('MANAGE_PERMISSIONS')) {
+    const resolved = await post<AuthorizationDecision>('/api/v1/authorization/resolve', { resourceType: 'PAGE', resourceId: pageId })
+    if (version !== permissionsRequestVersion || pageId !== props.page.id) return
+    if (resolved.capabilities.includes('MANAGE_PERMISSIONS')) {
       const [acl, workspaceMembers, userGroups, workspaceTeams] = await Promise.all([
-        post<AclEntry[]>('/api/v1/authorization/list', { resourceType: 'PAGE', resourceId: props.page.id }),
-        post<WorkspaceMember[]>('/api/v1/workspaces/members', { workspaceId: props.page.workspaceId }),
-        post<UserGroup[]>('/api/v1/user-groups/list', { workspaceId: props.page.workspaceId }),
-        post<Team[]>('/api/v1/teams/list', { workspaceId: props.page.workspaceId }),
+        post<AclEntry[]>('/api/v1/authorization/list', { resourceType: 'PAGE', resourceId: pageId }),
+        post<WorkspaceMember[]>('/api/v1/workspaces/members', { workspaceId }),
+        post<UserGroup[]>('/api/v1/user-groups/list', { workspaceId }),
+        post<Team[]>('/api/v1/teams/list', { workspaceId }),
       ])
-      entries.value = acl
-      members.value = workspaceMembers
-      groups.value = userGroups
-      teams.value = workspaceTeams
+      if (version !== permissionsRequestVersion || pageId !== props.page.id) return
+      entries.value = Array.isArray(acl) ? acl : []
+      members.value = Array.isArray(workspaceMembers) ? workspaceMembers : []
+      groups.value = Array.isArray(userGroups) ? userGroups : []
+      teams.value = Array.isArray(workspaceTeams) ? workspaceTeams : []
     } else {
       entries.value = []
       members.value = []
       groups.value = []
       teams.value = []
     }
+    decision.value = resolved
   } catch (value) {
-    error.value = messageOf(value)
+    if (version === permissionsRequestVersion && pageId === props.page.id) { error.value = messageOf(value); loadFailed.value = true }
   } finally {
-    loading.value = false
+    if (version === permissionsRequestVersion && pageId === props.page.id) loading.value = false
   }
 }
 
 function requestGrant() {
-  if (subjectType.value !== 'PUBLIC' && !subjectId.value) return
+  if (loading.value || loadFailed.value || error.value || !canManage.value || (subjectType.value !== 'PUBLIC' && !subjectId.value)) return
   if (highImpactGrant.value) grantConfirmOpen.value = true
   else void grant()
 }
 
 async function grant() {
-  if (working.value || (subjectType.value !== 'PUBLIC' && !subjectId.value)) return
+  if (working.value || loading.value || loadFailed.value || error.value || !canManage.value || (subjectType.value !== 'PUBLIC' && !subjectId.value)) return
+  const pageId = props.page.id
   working.value = true
   error.value = ''
   try {
     await post<AclEntry>('/api/v1/authorization/grant', {
       resourceType: 'PAGE',
-      resourceId: props.page.id,
+      resourceId: pageId,
       subjectType: subjectType.value,
       subjectId: subjectType.value === 'PUBLIC' ? null : subjectId.value,
       role: role.value,
       effect: effect.value,
       capabilities: [],
     })
+    if (pageId !== props.page.id) return
     grantConfirmOpen.value = false
     subjectId.value = null
     await loadAll()
     ui.notify('文稿权限已保存')
   } catch (value) {
-    error.value = messageOf(value)
+    if (pageId === props.page.id) error.value = messageOf(value)
   } finally {
     working.value = false
   }
 }
 
 async function revoke() {
-  if (!revokeTarget.value || working.value) return
+  if (!revokeTarget.value || working.value || loading.value || loadFailed.value || error.value || !canManage.value) return
+  const pageId = props.page.id
+  const aclEntryId = revokeTarget.value.id
+  if (!entries.value.some((entry) => entry.id === aclEntryId)) return
   working.value = true
   error.value = ''
   try {
-    await post<void>('/api/v1/authorization/revoke', { aclEntryId: revokeTarget.value.id })
+    await post<void>('/api/v1/authorization/revoke', { aclEntryId })
+    if (pageId !== props.page.id) return
     revokeTarget.value = null
     await loadAll()
     ui.notify('文稿级权限覆盖已移除')
   } catch (value) {
-    error.value = messageOf(value)
+    if (pageId === props.page.id) error.value = messageOf(value)
   } finally {
     working.value = false
   }
@@ -139,12 +166,13 @@ function sourceLabel(value: string) {
 <template>
   <section class="panel-shell">
     <header class="panel-heading">
-      <v-avatar color="primary" variant="tonal"><v-icon>mdi-account-lock-outline</v-icon></v-avatar>
+      <v-icon size="18">mdi-account-lock-outline</v-icon>
       <div><h2>协作者权限</h2><p>查看最终能力和继承来源，并配置文稿级访问覆盖。</p></div>
     </header>
 
     <v-progress-linear v-if="loading" indeterminate color="primary" class="mb-5" />
     <v-alert v-if="error" type="error" variant="tonal" closable class="mb-5" @click:close="error = ''">{{ error }}</v-alert>
+    <div v-if="loadFailed && !decision && !loading" class="permission-load-error"><v-icon size="28">mdi-alert-circle-outline</v-icon><strong>权限信息加载失败</strong><span>当前未显示任何权限结论，请重新加载</span><v-btn size="small" variant="tonal" prepend-icon="mdi-refresh" @click="loadAll">重新加载</v-btn></div>
 
     <v-card v-if="decision" variant="tonal" color="primary" class="decision-card mb-6">
       <v-card-text>
@@ -160,54 +188,56 @@ function sourceLabel(value: string) {
     <template v-if="canManage">
       <h3 class="subheading">新增或更新覆盖</h3>
       <div class="grant-grid">
-        <v-select v-model="subjectType" label="主体类型" variant="outlined" :items="[{title:'指定用户',value:'USER'},{title:'指定用户组',value:'GROUP'},{title:'指定团队',value:'TEAM'},{title:'任何人',value:'PUBLIC'}]" @update:model-value="subjectId = null" />
-        <v-select v-if="subjectType !== 'PUBLIC'" v-model="subjectId" label="选择主体" variant="outlined" :items="subjectItems" />
-        <v-text-field v-else model-value="所有访问者" label="访问主体" variant="outlined" disabled prepend-inner-icon="mdi-earth" />
-        <v-select v-model="role" label="角色" variant="outlined" :items="[{title:'只读',value:'READER'},{title:'可编辑',value:'EDITOR'},{title:'管理者',value:'MANAGER'}]" />
-        <v-select v-model="effect" label="效果" variant="outlined" :color="effect === 'DENY' ? 'error' : undefined" :items="[{title:'允许',value:'ALLOW'},{title:'拒绝',value:'DENY'}]" />
+        <v-select v-model="subjectType" label="主体类型" variant="outlined" density="compact" :items="[{title:'指定用户',value:'USER'},{title:'指定用户组',value:'GROUP'},{title:'指定团队',value:'TEAM'},{title:'任何人',value:'PUBLIC'}]" @update:model-value="subjectId = null" />
+        <v-select v-if="subjectType !== 'PUBLIC'" v-model="subjectId" label="选择主体" variant="outlined" density="compact" :items="subjectItems" />
+        <v-text-field v-else model-value="所有访问者" label="访问主体" variant="outlined" density="compact" disabled prepend-inner-icon="mdi-earth" />
+        <v-select v-model="role" label="角色" variant="outlined" density="compact" :items="[{title:'只读',value:'READER'},{title:'可编辑',value:'EDITOR'},{title:'管理者',value:'MANAGER'}]" />
+        <v-select v-model="effect" label="效果" variant="outlined" density="compact" :color="effect === 'DENY' ? 'error' : undefined" :items="[{title:'允许',value:'ALLOW'},{title:'拒绝',value:'DENY'}]" />
       </div>
-      <div class="grant-actions"><v-btn color="primary" prepend-icon="mdi-shield-check-outline" :loading="working" :disabled="subjectType !== 'PUBLIC' && !subjectId" @click="requestGrant">保存权限</v-btn></div>
+      <div class="grant-actions"><v-btn color="primary" prepend-icon="mdi-shield-check-outline" :loading="working" :disabled="loading || Boolean(error) || !canManage || (subjectType !== 'PUBLIC' && !subjectId)" @click="requestGrant">保存权限</v-btn></div>
 
-      <v-divider class="my-7" />
+      <v-divider class="my-5" />
       <div class="section-title"><h3>文稿级权限覆盖</h3><v-chip size="small" variant="tonal">{{ entries.length }} 条</v-chip></div>
       <div v-if="entries.length" class="acl-list">
         <article v-for="entry in entries" :key="entry.id">
-          <v-avatar :color="entry.effect === 'ALLOW' ? 'success' : 'error'" variant="tonal" size="38"><v-icon size="19">{{ entry.effect === 'ALLOW' ? 'mdi-check' : 'mdi-cancel' }}</v-icon></v-avatar>
+          <span class="effect-icon" :class="entry.effect.toLowerCase()"><v-icon size="16">{{ entry.effect === 'ALLOW' ? 'mdi-check' : 'mdi-cancel' }}</v-icon></span>
           <div class="acl-copy"><strong>{{ principalName(entry) }}</strong><span>{{ subjectTypeLabel(entry.subjectType) }} · {{ entry.effect === 'ALLOW' ? '允许' : '拒绝' }} {{ roleLabel(entry.role) }}<template v-if="entry.capabilities.length"> · {{ entry.capabilities.map(capabilityLabel).join('、') }}</template></span><small>{{ formatDateTime(entry.updatedAt) }}</small></div>
-          <v-btn icon="mdi-delete-outline" variant="text" color="error" :aria-label="`移除 ${principalName(entry)} 的权限`" @click="revokeTarget = entry" />
+          <v-btn icon="mdi-delete-outline" variant="text" color="error" :disabled="loading || Boolean(error) || working" :aria-label="`移除 ${principalName(entry)} 的权限`" @click="revokeTarget = entry" />
         </article>
       </div>
-      <div v-else-if="!loading" class="empty-box"><v-icon size="36">mdi-account-group-outline</v-icon><strong>没有文稿级覆盖</strong><span>当前完全继承空间、团队和知识库权限。</span></div>
+      <div v-else-if="!loading && !loadFailed" class="empty-box"><v-icon size="28">mdi-account-group-outline</v-icon><strong>没有文稿级覆盖</strong><span>当前继承空间、团队和知识库权限</span></div>
     </template>
 
     <v-alert v-else-if="decision && !loading" type="info" variant="tonal" icon="mdi-lock-outline">
       你可以查看最终权限，但需要“管理权限”能力才能新增或撤销文稿级协作者。
     </v-alert>
 
-    <v-dialog v-model="grantConfirmOpen" max-width="510" persistent>
-      <v-card><v-card-title class="px-6 pt-5">保存高影响文稿权限？</v-card-title><v-card-text class="px-6">公开主体、拒绝规则或管理者角色会明显改变访问范围，保存后立即生效。<v-alert v-if="error" type="error" variant="tonal" class="mt-4">{{ error }}</v-alert></v-card-text><v-card-actions class="px-6 pb-5"><v-spacer /><v-btn :disabled="working" @click="grantConfirmOpen = false">取消</v-btn><v-btn color="primary" :loading="working" @click="grant">确认保存</v-btn></v-card-actions></v-card>
+    <v-dialog v-model="grantConfirmOpen" max-width="480" persistent>
+      <v-card><v-card-title class="px-6 pt-5">保存高影响文稿权限？</v-card-title><v-card-text class="px-6">公开主体、拒绝规则或管理者角色会明显改变访问范围，保存后立即生效。<v-alert v-if="error" type="error" variant="tonal" class="mt-4">{{ error }}</v-alert></v-card-text><v-card-actions class="px-6 pb-5"><v-spacer /><v-btn :disabled="working" @click="grantConfirmOpen = false">取消</v-btn><v-btn color="primary" :loading="working" :disabled="loading || Boolean(error) || !canManage" @click="grant">确认保存</v-btn></v-card-actions></v-card>
     </v-dialog>
 
-    <v-dialog :model-value="Boolean(revokeTarget)" max-width="510" persistent>
-      <v-card><v-card-title class="px-6 pt-5">移除“{{ revokeTarget ? principalName(revokeTarget) : '' }}”的覆盖权限？</v-card-title><v-card-text class="px-6">移除后立即回到空间、团队和知识库继承权限的计算结果。<v-alert v-if="error" type="error" variant="tonal" class="mt-4">{{ error }}</v-alert></v-card-text><v-card-actions class="px-6 pb-5"><v-spacer /><v-btn :disabled="working" @click="revokeTarget = null">取消</v-btn><v-btn color="error" :loading="working" @click="revoke">确认移除</v-btn></v-card-actions></v-card>
+    <v-dialog :model-value="Boolean(revokeTarget)" max-width="480" persistent>
+      <v-card><v-card-title class="px-6 pt-5">移除“{{ revokeTarget ? principalName(revokeTarget) : '' }}”的覆盖权限？</v-card-title><v-card-text class="px-6">移除后立即回到空间、团队和知识库继承权限的计算结果。<v-alert v-if="error" type="error" variant="tonal" class="mt-4">{{ error }}</v-alert></v-card-text><v-card-actions class="px-6 pb-5"><v-spacer /><v-btn :disabled="working" @click="revokeTarget = null">取消</v-btn><v-btn color="error" :loading="working" :disabled="loading || Boolean(error) || !canManage" @click="revoke">确认移除</v-btn></v-card-actions></v-card>
     </v-dialog>
   </section>
 </template>
 
 <style scoped>
-.panel-shell { max-width: 940px; margin: 0 auto; }
-.panel-heading { display: flex; align-items: center; gap: 13px; margin-bottom: 24px; }
-.panel-heading h2 { margin: 0; font-size: 1.15rem; }.panel-heading p { margin: 4px 0 0; color: rgb(var(--v-theme-on-surface-variant)); font-size: .84rem; }
-.decision-card { border: 1px solid rgba(var(--v-theme-primary), .14); }
-.decision-head { display: flex; align-items: center; gap: 8px; }.decision-head strong { margin-right: auto; }
-.capability-cloud { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin: 14px 0; }
-.sources { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; font-size: .78rem; }.sources code { border-radius: 6px; padding: 3px 7px; background: rgba(var(--v-theme-on-surface), .06); }
-.subheading, .section-title h3 { margin: 0 0 15px; font-size: .98rem; }
-.grant-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 14px; }.grant-actions { display: flex; justify-content: flex-end; }
+.panel-shell { width: 100%; margin: 0; }
+.panel-heading { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 16px; }.panel-heading > .v-icon { margin-top: 2px; color: #737876; }
+.panel-heading h2 { margin: 0; font-size: 15px; line-height: 20px; }.panel-heading p { margin: 2px 0 0; color: #8a8f8d; font-size: 12px; line-height: 18px; }
+.decision-card { border: 1px solid #dce8e0; border-radius: 6px !important; background: #f7faf8 !important; color: #262626 !important; }.decision-card :deep(.v-card-text) { padding: 12px; }
+.decision-head { display: flex; align-items: center; gap: 6px; font-size: 13px; }.decision-head strong { margin-right: auto; }
+.capability-cloud { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin: 10px 0; }
+.sources { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; color: #737876; font-size: 11px; }.sources code { border-radius: 4px; padding: 2px 5px; background: #edf0ee; }
+.subheading, .section-title h3 { margin: 0 0 12px; font-size: 14px; }
+.grant-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 10px; }.grant-actions { display: flex; justify-content: flex-end; }
 .section-title { display: flex; align-items: center; justify-content: space-between; }.section-title h3 { margin: 0; }
-.acl-list { overflow: hidden; border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity)); border-radius: 12px; }
-.acl-list article { display: flex; align-items: center; gap: 12px; padding: 13px; }.acl-list article + article { border-top: 1px solid rgba(var(--v-border-color), var(--v-border-opacity)); }
-.acl-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; }.acl-copy span, .acl-copy small { color: rgb(var(--v-theme-on-surface-variant)); font-size: .78rem; }.acl-copy small { margin-top: 2px; font-size: .7rem; }
-.empty-box { display: grid; min-height: 170px; place-items: center; align-content: center; gap: 7px; border: 1px dashed rgba(var(--v-border-color), var(--v-border-opacity)); border-radius: 12px; color: rgb(var(--v-theme-on-surface-variant)); text-align: center; }.empty-box span { font-size: .82rem; }
+.acl-list { overflow: hidden; border: 1px solid #e7e9e8; border-radius: 6px; }
+.acl-list article { display: flex; min-height: 54px; align-items: center; gap: 9px; padding: 8px 7px 8px 10px; }.acl-list article:hover { background: #fafbfa; }.acl-list article + article { border-top: 1px solid #eef0ef; }
+.effect-icon { display: grid; width: 28px; height: 28px; flex: 0 0 28px; place-items: center; border-radius: 5px; }.effect-icon.allow { background: #eaf7ef; color: #25834b; }.effect-icon.deny { background: #fff0ef; color: #d33b32; }
+.acl-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; }.acl-copy strong { font-size: 13px; }.acl-copy span, .acl-copy small { color: #818684; font-size: 11px; }.acl-copy small { margin-top: 1px; font-size: 10px; }
+.empty-box { display: grid; min-height: 140px; place-items: center; align-content: center; gap: 5px; border: 1px dashed #e0e3e1; border-radius: 6px; color: #9ba09e; text-align: center; }.empty-box strong { color: #606562; font-size: 13px; }.empty-box span { font-size: 12px; }
+.permission-load-error { display: grid; min-height: 150px; place-items: center; align-content: center; gap: 5px; border: 1px dashed #ead4d1; border-radius: 6px; color: #8a8f8d; text-align: center; }.permission-load-error > .v-icon { color: #d84b42; }.permission-load-error strong { color: #606562; font-size: 13px; }.permission-load-error span { font-size: 12px; }
 @media (max-width: 650px) { .grant-grid { grid-template-columns: 1fr; } }
 </style>

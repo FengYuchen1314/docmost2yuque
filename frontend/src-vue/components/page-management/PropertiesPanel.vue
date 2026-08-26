@@ -35,6 +35,7 @@ const labelsSaving = ref(false)
 const labelsError = ref('')
 const labelName = ref('')
 const labelColor = ref('#5A8F6B')
+let labelsRequestVersion = 0
 
 const parsedCover = computed(() => safeHttpsUrl(draft.value.cover))
 const coverInvalid = computed(() => Boolean(draft.value.cover.trim()) && parsedCover.value === null)
@@ -42,7 +43,12 @@ const coverInvalid = computed(() => Boolean(draft.value.cover.trim()) && parsedC
 watch(() => [props.page.id, props.page.draftRevision] as const, () => {
   draft.value = propertyDraft(props.page)
 }, { immediate: true })
-watch(() => props.page.id, () => void loadLabels(), { immediate: true })
+watch(() => props.page.id, () => {
+  trashOpen.value = false
+  error.value = ''
+  labelName.value = ''
+  void loadLabels()
+}, { immediate: true })
 onBeforeUnmount(() => window.clearTimeout(savedTimer))
 
 function propertyDraft(page: Page): PropertyDraft {
@@ -59,11 +65,12 @@ function propertyDraft(page: Page): PropertyDraft {
 
 async function saveProperties() {
   if (saving.value || !draft.value.title.trim() || !draft.value.path || coverInvalid.value) return
+  const pageId = props.page.id
   saving.value = true
   error.value = ''
   try {
     const page = await post<Page>('/api/v1/pages/update', {
-      pageId: props.page.id,
+      pageId,
       expectedRevision: props.page.draftRevision,
       title: draft.value.title.trim(),
       path: draft.value.path,
@@ -75,33 +82,40 @@ async function saveProperties() {
       revisionKind: 'MANUAL',
       revisionDescription: '更新文稿设置',
     })
+    if (pageId !== props.page.id) return
     emit('updated', page)
     saved.value = true
     window.clearTimeout(savedTimer)
     savedTimer = window.setTimeout(() => { saved.value = false }, 2_000)
     ui.notify('文稿设置已保存')
   } catch (value) {
-    error.value = messageOf(value)
+    if (pageId === props.page.id) error.value = messageOf(value)
   } finally {
     saving.value = false
   }
 }
 
 async function loadLabels() {
+  const pageId = props.page.id
+  const version = ++labelsRequestVersion
   labelsLoading.value = true
   labelsError.value = ''
+  labels.value = []
+  labelsRevision.value = 0
   try {
-    const value = await post<PageLabels>('/api/v1/pages/labels', { pageId: props.page.id })
+    const value = await post<PageLabels>('/api/v1/pages/labels', { pageId })
+    if (version !== labelsRequestVersion || pageId !== props.page.id) return
     labelsRevision.value = value.revision
-    labels.value = value.labels.map((label) => ({ name: label.name, color: label.color }))
+    labels.value = Array.isArray(value.labels) ? value.labels.map((label) => ({ name: label.name, color: label.color })) : []
   } catch (value) {
-    labelsError.value = messageOf(value)
+    if (version === labelsRequestVersion && pageId === props.page.id) labelsError.value = messageOf(value)
   } finally {
-    labelsLoading.value = false
+    if (version === labelsRequestVersion && pageId === props.page.id) labelsLoading.value = false
   }
 }
 
 function addLabel() {
+  if (labelsLoading.value || labelsSaving.value || labelsError.value) return
   const name = labelName.value.trim().slice(0, 50)
   if (!name || labels.value.length >= 20) return
   if (labels.value.some((label) => label.name.localeCompare(name, 'zh-CN', { sensitivity: 'accent' }) === 0)) {
@@ -114,36 +128,40 @@ function addLabel() {
 }
 
 async function saveLabels() {
-  if (labelsSaving.value) return
+  if (labelsSaving.value || labelsLoading.value || labelsError.value) return
+  const pageId = props.page.id
   labelsSaving.value = true
   labelsError.value = ''
   try {
     const value = await post<PageLabels>('/api/v1/pages/labels/update', {
-      pageId: props.page.id,
+      pageId,
       expectedRevision: labelsRevision.value,
       labels: labels.value,
     })
+    if (pageId !== props.page.id) return
     labelsRevision.value = value.revision
-    labels.value = value.labels.map((label) => ({ name: label.name, color: label.color }))
+    labels.value = Array.isArray(value.labels) ? value.labels.map((label) => ({ name: label.name, color: label.color })) : []
     ui.notify('文稿标签已保存')
   } catch (value) {
-    labelsError.value = messageOf(value)
+    if (pageId === props.page.id) labelsError.value = messageOf(value)
   } finally {
     labelsSaving.value = false
   }
 }
 
 async function trashPage() {
-  if (trashing.value) return
+  if (trashing.value || saving.value || error.value) return
+  const pageId = props.page.id
   trashing.value = true
   error.value = ''
   try {
-    await post<void>('/api/v1/pages/trash', { pageId: props.page.id })
+    await post<void>('/api/v1/pages/trash', { pageId })
+    if (pageId !== props.page.id) return
     trashOpen.value = false
     emit('deleted')
     ui.notify('文稿已移入回收站')
   } catch (value) {
-    error.value = messageOf(value)
+    if (pageId === props.page.id) error.value = messageOf(value)
   } finally {
     trashing.value = false
   }
@@ -153,42 +171,44 @@ async function trashPage() {
 <template>
   <section class="panel-shell">
     <header class="panel-heading">
-      <v-avatar color="primary" variant="tonal"><v-icon>mdi-tune-variant</v-icon></v-avatar>
+      <v-icon size="18">mdi-tune-variant</v-icon>
       <div><h2>属性与标签</h2><p>修改页面身份、阅读样式、发布方式和搜索标签。</p></div>
     </header>
 
     <v-alert v-if="error" type="error" variant="tonal" closable class="mb-5" @click:close="error = ''">{{ error }}</v-alert>
 
     <div class="settings-grid">
-      <v-text-field v-model="draft.title" label="标题" variant="outlined" maxlength="500" />
+      <v-text-field v-model="draft.title" label="标题" variant="outlined" density="compact" maxlength="500" />
       <v-text-field
         :model-value="draft.path"
         label="访问路径"
         prefix="/"
         variant="outlined"
+        density="compact"
         maxlength="180"
         @update:model-value="draft.path = slugify(String($event))"
       />
-      <v-text-field v-model="draft.icon" label="图标" hint="可使用 emoji 或图片地址" persistent-hint variant="outlined" maxlength="2000" />
+      <v-text-field v-model="draft.icon" label="图标" hint="可使用 emoji 或图片地址" persistent-hint variant="outlined" density="compact" maxlength="2000" />
       <v-text-field
         v-model="draft.cover"
         label="封面 HTTPS 地址"
         variant="outlined"
+        density="compact"
         maxlength="2000"
         :error="coverInvalid"
         :error-messages="coverInvalid ? ['请输入不含账号凭据的 HTTPS 地址'] : []"
       />
-      <v-select v-model="draft.publishMode" label="发布方式" variant="outlined" :items="[{title:'继承知识库',value:'INHERIT'},{title:'手动发布',value:'MANUAL'},{title:'自动发布',value:'AUTO'}]" />
-      <v-select v-model="draft.visibilityOverride" label="可见范围" variant="outlined" :items="[{title:'继承知识库',value:'INHERIT'},{title:'私密',value:'PRIVATE'},{title:'空间成员',value:'WORKSPACE'},{title:'公开',value:'PUBLIC'}]" />
+      <v-select v-model="draft.publishMode" label="发布方式" variant="outlined" density="compact" :items="[{title:'继承知识库',value:'INHERIT'},{title:'手动发布',value:'MANUAL'},{title:'自动发布',value:'AUTO'}]" />
+      <v-select v-model="draft.visibilityOverride" label="可见范围" variant="outlined" density="compact" :items="[{title:'继承知识库',value:'INHERIT'},{title:'私密',value:'PRIVATE'},{title:'空间成员',value:'WORKSPACE'},{title:'公开',value:'PUBLIC'}]" />
     </div>
 
     <h3 class="subheading"><v-icon size="18">mdi-format-text-variant</v-icon>阅读样式</h3>
     <div class="settings-grid settings-compact">
-      <v-select v-model="draft.documentSettings.pageWidth" label="页面宽度" variant="outlined" :items="[{title:'标准版',value:'STANDARD'},{title:'宽版',value:'WIDE'}]" />
-      <v-select v-model="draft.documentSettings.fontFamily" label="正文字体" variant="outlined" :items="[{title:'无衬线',value:'SANS'},{title:'衬线',value:'SERIF'}]" />
-      <v-select v-model="draft.documentSettings.fontSize" label="字体大小" variant="outlined" :items="[{title:'小',value:'SMALL'},{title:'标准',value:'MEDIUM'},{title:'大',value:'LARGE'}]" />
-      <v-select v-model="draft.documentSettings.paragraphSpacing" label="段落间距" variant="outlined" :items="[{title:'紧凑',value:'COMPACT'},{title:'标准',value:'NORMAL'},{title:'宽松',value:'RELAXED'}]" />
-      <v-switch v-model="draft.documentSettings.showOutline" label="标题足够时显示文稿大纲" color="primary" hide-details inset />
+      <v-select v-model="draft.documentSettings.pageWidth" label="页面宽度" variant="outlined" density="compact" :items="[{title:'标准版',value:'STANDARD'},{title:'宽版',value:'WIDE'}]" />
+      <v-select v-model="draft.documentSettings.fontFamily" label="正文字体" variant="outlined" density="compact" :items="[{title:'无衬线',value:'SANS'},{title:'衬线',value:'SERIF'}]" />
+      <v-select v-model="draft.documentSettings.fontSize" label="字体大小" variant="outlined" density="compact" :items="[{title:'小',value:'SMALL'},{title:'标准',value:'MEDIUM'},{title:'大',value:'LARGE'}]" />
+      <v-select v-model="draft.documentSettings.paragraphSpacing" label="段落间距" variant="outlined" density="compact" :items="[{title:'紧凑',value:'COMPACT'},{title:'标准',value:'NORMAL'},{title:'宽松',value:'RELAXED'}]" />
+      <v-switch v-model="draft.documentSettings.showOutline" label="标题足够时显示文稿大纲" color="primary" density="compact" hide-details inset />
     </div>
 
     <div class="actions-row">
@@ -197,7 +217,7 @@ async function trashPage() {
       </v-btn>
     </div>
 
-    <v-divider class="my-7" />
+    <v-divider class="my-5" />
 
     <section class="labels-section">
       <div class="section-title-row">
@@ -207,53 +227,53 @@ async function trashPage() {
       <v-progress-linear v-if="labelsLoading" indeterminate color="primary" class="mb-4" />
       <v-alert v-if="labelsError" type="error" variant="tonal" closable class="mb-4" @click:close="labelsError = ''">{{ labelsError }}</v-alert>
       <div class="label-list mb-4">
-        <v-chip v-for="(label, index) in labels" :key="`${label.name}-${index}`" closable variant="tonal" @click:close="labels.splice(index, 1)">
+        <v-chip v-for="(label, index) in labels" :key="`${label.name}-${index}`" closable variant="tonal" :disabled="labelsLoading || Boolean(labelsError) || labelsSaving" @click:close="labels.splice(index, 1)">
           <span class="label-dot" :style="{ backgroundColor: label.color }" />{{ label.name }}
         </v-chip>
-        <span v-if="!labelsLoading && !labels.length" class="empty-inline">还没有标签</span>
+        <span v-if="!labelsLoading && !labelsError && !labels.length" class="empty-inline">还没有标签</span>
       </div>
       <div class="label-create-row">
         <input v-model="labelColor" type="color" aria-label="标签颜色" class="color-input">
-        <v-text-field v-model="labelName" label="新标签名称" variant="outlined" density="comfortable" maxlength="50" hide-details @keydown.enter.prevent="addLabel" />
-        <v-btn variant="tonal" prepend-icon="mdi-plus" :disabled="!labelName.trim() || labels.length >= 20" @click="addLabel">添加</v-btn>
-        <v-btn color="primary" variant="tonal" prepend-icon="mdi-content-save-outline" :loading="labelsSaving" @click="saveLabels">保存标签</v-btn>
+        <v-text-field v-model="labelName" label="新标签名称" variant="outlined" density="compact" maxlength="50" hide-details @keydown.enter.prevent="addLabel" />
+        <v-btn variant="tonal" prepend-icon="mdi-plus" :disabled="labelsLoading || Boolean(labelsError) || labelsSaving || !labelName.trim() || labels.length >= 20" @click="addLabel">添加</v-btn>
+        <v-btn color="primary" variant="tonal" prepend-icon="mdi-content-save-outline" :loading="labelsSaving" :disabled="labelsLoading || Boolean(labelsError)" @click="saveLabels">保存标签</v-btn>
       </div>
     </section>
 
-    <v-divider class="my-7" />
+    <v-divider class="my-5" />
     <section class="danger-zone">
       <div><strong>移入回收站</strong><p>文稿会从目录和搜索结果中隐藏，空间管理员之后仍可恢复。</p></div>
-      <v-btn color="error" variant="tonal" prepend-icon="mdi-delete-outline" @click="trashOpen = true">移入回收站</v-btn>
+      <v-btn color="error" variant="tonal" prepend-icon="mdi-delete-outline" :disabled="saving || Boolean(error) || trashing" @click="trashOpen = true">移入回收站</v-btn>
     </section>
 
-    <v-dialog v-model="trashOpen" max-width="500" persistent>
+    <v-dialog v-model="trashOpen" max-width="480" persistent>
       <v-card>
         <v-card-title class="px-6 pt-5">将“{{ page.title }}”移入回收站？</v-card-title>
         <v-card-text class="px-6">文稿会从目录、搜索结果和编辑入口隐藏。该操作可由有权限的管理员恢复。<v-alert v-if="error" type="error" variant="tonal" class="mt-4">{{ error }}</v-alert></v-card-text>
-        <v-card-actions class="px-6 pb-5"><v-spacer /><v-btn :disabled="trashing" @click="trashOpen = false">取消</v-btn><v-btn color="error" :loading="trashing" @click="trashPage">确认移入</v-btn></v-card-actions>
+        <v-card-actions class="px-6 pb-5"><v-spacer /><v-btn :disabled="trashing" @click="trashOpen = false">取消</v-btn><v-btn color="error" :loading="trashing" :disabled="saving || Boolean(error)" @click="trashPage">确认移入</v-btn></v-card-actions>
       </v-card>
     </v-dialog>
   </section>
 </template>
 
 <style scoped>
-.panel-shell { max-width: 940px; margin: 0 auto; }
-.panel-heading { display: flex; align-items: center; gap: 13px; margin-bottom: 24px; }
-.panel-heading h2, .section-title-row h3 { margin: 0; font-size: 1.15rem; }
-.panel-heading p, .section-title-row p { margin: 4px 0 0; color: rgb(var(--v-theme-on-surface-variant)); font-size: .84rem; }
-.settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 16px; }
+.panel-shell { width: 100%; margin: 0; }
+.panel-heading { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 16px; }.panel-heading > .v-icon { margin-top: 2px; color: #737876; }
+.panel-heading h2, .section-title-row h3 { margin: 0; font-size: 15px; line-height: 20px; }
+.panel-heading p, .section-title-row p { margin: 2px 0 0; color: #8a8f8d; font-size: 12px; line-height: 18px; }
+.settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 10px; }
 .settings-compact { align-items: center; }
-.subheading { display: flex; align-items: center; gap: 7px; margin: 8px 0 16px; font-size: .95rem; }
-.actions-row { display: flex; justify-content: flex-end; margin-top: 10px; }
-.section-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
-.section-title-row h3 { font-size: 1rem; }
-.label-list { display: flex; min-height: 36px; align-items: center; flex-wrap: wrap; gap: 8px; }
+.subheading { display: flex; align-items: center; gap: 6px; margin: 6px 0 12px; font-size: 14px; }
+.actions-row { display: flex; justify-content: flex-end; margin-top: 6px; }
+.section-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.section-title-row h3 { font-size: 14px; }
+.label-list { display: flex; min-height: 32px; align-items: center; flex-wrap: wrap; gap: 6px; }
 .label-dot { width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; }
-.empty-inline { color: rgb(var(--v-theme-on-surface-variant)); font-size: .83rem; }
+.empty-inline { color: #8a8f8d; font-size: 12px; }
 .label-create-row { display: grid; grid-template-columns: 44px minmax(170px, 1fr) auto auto; align-items: center; gap: 9px; }
-.color-input { width: 42px; height: 42px; border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity)); border-radius: 9px; padding: 4px; background: transparent; }
-.danger-zone { display: flex; align-items: center; justify-content: space-between; gap: 20px; border: 1px solid rgba(var(--v-theme-error), .25); border-radius: 12px; padding: 16px; background: rgba(var(--v-theme-error), .035); }
+.color-input { width: 40px; height: 40px; border: 1px solid #dfe2e0; border-radius: 5px; padding: 3px; background: transparent; }
+.danger-zone { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid #f0d9d7; padding: 14px 0 0; }
 .danger-zone strong { color: rgb(var(--v-theme-error)); }
-.danger-zone p { margin: 3px 0 0; color: rgb(var(--v-theme-on-surface-variant)); font-size: .82rem; }
+.danger-zone p { margin: 2px 0 0; color: #8a8f8d; font-size: 12px; }
 @media (max-width: 680px) { .settings-grid { grid-template-columns: 1fr; } .label-create-row { grid-template-columns: 44px 1fr; } .label-create-row .v-btn { grid-column: span 1; } .danger-zone { align-items: stretch; flex-direction: column; } }
 </style>
