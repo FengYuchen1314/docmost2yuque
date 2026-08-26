@@ -241,17 +241,18 @@ function formatDate(value: string) {
 </script>
 
 <template>
-  <div class="page-shell templates-view">
-    <header class="page-heading">
+  <main class="templates-view">
+    <header class="templates-header">
       <div>
         <h1>模板中心</h1>
         <p>从模板快速开始创作。</p>
       </div>
-      <v-chip prepend-icon="mdi-domain" variant="tonal" color="primary">{{ currentWorkspaceName }}</v-chip>
+      <span class="current-workspace"><v-icon size="15">mdi-domain</v-icon>{{ currentWorkspaceName }}</span>
     </header>
 
-    <v-card class="section-card mb-5" rounded="xl">
-      <div class="template-toolbar pa-4 pa-md-5">
+    <div class="templates-body">
+    <section class="template-toolbar-panel">
+      <div class="template-toolbar">
         <v-select
           v-model="workspaceId"
           :items="workspaceOptions"
@@ -259,6 +260,8 @@ function formatDate(value: string) {
           item-value="id"
           label="工作区"
           prepend-inner-icon="mdi-domain"
+          density="compact"
+          variant="outlined"
           hide-details
           class="workspace-filter"
         />
@@ -266,40 +269,42 @@ function formatDate(value: string) {
           v-model="searchInput"
           label="搜索模板与分类"
           prepend-inner-icon="mdi-magnify"
+          density="compact"
+          variant="outlined"
           clearable
           hide-details
           class="search-filter"
         />
-        <v-btn-toggle v-model="type" mandatory color="primary" variant="outlined" divided>
+        <v-btn-toggle v-model="type" mandatory density="compact" color="primary" variant="outlined" divided>
           <v-btn value="">全部</v-btn>
           <v-btn value="DOCUMENT" prepend-icon="mdi-file-document-outline">文档</v-btn>
           <v-btn value="KNOWLEDGE_BASE" prepend-icon="mdi-book-open-page-variant-outline">知识库</v-btn>
         </v-btn-toggle>
       </div>
-    </v-card>
+    </section>
 
-    <v-alert v-if="error" type="error" variant="tonal" closable class="mb-5" @click:close="error = ''">
+    <v-alert v-if="error" type="error" variant="tonal" density="compact" closable class="templates-error" @click:close="error = ''">
       {{ error }}
       <template #append><v-btn variant="text" size="small" @click="loadTemplates(true)">重试</v-btn></template>
     </v-alert>
 
     <div v-if="loading" class="template-grid" aria-label="正在加载模板">
-      <v-skeleton-loader v-for="index in 8" :key="index" type="image, article" class="section-card" />
+      <v-skeleton-loader v-for="index in 8" :key="index" type="image, article" class="template-skeleton" />
     </div>
 
     <div v-else-if="templates.length" class="template-grid">
       <v-card
         v-for="template in templates"
         :key="template.id"
-        class="template-card section-card clickable"
-        rounded="xl"
+        class="template-card clickable"
+        rounded="lg"
         tabindex="0"
         @click="openTemplate(template)"
         @keydown.enter.prevent="openTemplate(template)"
         @keydown.space.prevent="openTemplate(template)"
       >
         <div class="template-cover">
-          <v-img v-if="safeImageUrl(template.thumbnail)" :src="safeImageUrl(template.thumbnail) || undefined" height="144" cover>
+          <v-img v-if="safeImageUrl(template.thumbnail)" :src="safeImageUrl(template.thumbnail) || undefined" height="116" cover>
             <template #error><div class="template-cover-fallback"><v-icon size="44">mdi-image-off-outline</v-icon></div></template>
           </v-img>
           <div v-else class="template-cover-fallback">
@@ -309,8 +314,8 @@ function formatDate(value: string) {
             {{ template.templateType === 'DOCUMENT' ? '文档模板' : '知识库模板' }}
           </v-chip>
         </div>
-        <v-card-text class="pa-5">
-          <div class="text-caption text-primary font-weight-medium mb-2">{{ template.category || '未分类' }}</div>
+        <v-card-text class="template-card-body">
+          <div class="template-category">{{ template.category || '未分类' }}</div>
           <h2 class="template-title">{{ template.name }}</h2>
           <p class="template-description">{{ template.description || '一个可复用的内容起点。' }}</p>
           <div class="template-meta">
@@ -321,34 +326,31 @@ function formatDate(value: string) {
       </v-card>
     </div>
 
-    <v-card v-else class="section-card empty-state" rounded="xl">
+    <div v-else class="templates-empty">
       <div>
-        <v-icon size="52" color="primary">mdi-view-grid-plus-outline</v-icon>
-        <h2 class="text-h6 mt-4">{{ query || type ? '没有匹配的模板' : '还没有模板' }}</h2>
+        <v-icon size="38">mdi-view-grid-plus-outline</v-icon>
+        <h2>{{ query || type ? '没有匹配的模板' : '还没有模板' }}</h2>
         <p>{{ query || type ? '调整搜索词或模板类型后再试。' : '可在文档或知识库页面把成熟内容保存为模板。' }}</p>
         <v-btn v-if="query || type" variant="tonal" color="primary" @click="searchInput = ''; type = ''">清除筛选</v-btn>
       </div>
-    </v-card>
-
-    <div v-if="hasMore" class="load-more">
-      <v-btn variant="outlined" size="large" :loading="loadingMore" prepend-icon="mdi-chevron-down" @click="loadTemplates(false)">加载更多模板</v-btn>
     </div>
 
-    <v-dialog v-model="detailOpen" max-width="720" :persistent="creating || deleting" @after-leave="selected = null">
-      <v-card v-if="selected" rounded="xl">
-        <v-card-title class="dialog-title pa-5 pa-md-6">
-          <div>
-            <div class="text-overline text-primary">使用模板</div>
-            <span>{{ selected.name }}</span>
-          </div>
+    <div v-if="hasMore" class="load-more">
+      <v-btn variant="text" size="small" :loading="loadingMore" prepend-icon="mdi-chevron-down" @click="loadTemplates(false)">加载更多模板</v-btn>
+    </div>
+    </div>
+
+    <v-dialog v-model="detailOpen" max-width="620" :persistent="creating || deleting" @after-leave="selected = null">
+      <v-card v-if="selected" rounded="lg">
+        <v-card-title class="dialog-title">
+          <span>{{ selected.name }}</span>
           <v-spacer />
-          <v-btn icon="mdi-close" variant="text" aria-label="关闭模板详情" :disabled="creating || deleting" @click="closeTemplate" />
+          <v-btn icon="mdi-close" size="small" variant="text" aria-label="关闭模板详情" :disabled="creating || deleting" @click="closeTemplate" />
         </v-card-title>
-        <v-divider />
         <v-progress-linear v-if="detailLoading" indeterminate color="primary" />
-        <v-card-text class="pa-5 pa-md-6">
-          <div class="detail-summary mb-6">
-            <v-avatar color="primary" variant="tonal" rounded="lg" size="52">
+        <v-card-text class="detail-body">
+          <div class="detail-summary">
+            <v-avatar color="primary" variant="tonal" rounded="lg" size="42">
               <v-icon>{{ selected.templateType === 'DOCUMENT' ? 'mdi-file-document-outline' : 'mdi-bookshelf' }}</v-icon>
             </v-avatar>
             <div>
@@ -358,8 +360,8 @@ function formatDate(value: string) {
             </div>
           </div>
 
-          <v-alert v-if="detailError" type="error" variant="tonal" class="mb-5">{{ detailError }}</v-alert>
-          <v-alert v-if="selected.templateType === 'DOCUMENT' && !detailLoading && !knowledgeBases.length" type="warning" variant="tonal" class="mb-5">
+          <v-alert v-if="detailError" type="error" variant="tonal" density="compact" class="detail-alert">{{ detailError }}</v-alert>
+          <v-alert v-if="selected.templateType === 'DOCUMENT' && !detailLoading && !knowledgeBases.length" type="warning" variant="tonal" density="compact" class="detail-alert">
             当前工作区没有可用知识库，请先创建知识库再使用此模板。
           </v-alert>
 
@@ -371,6 +373,8 @@ function formatDate(value: string) {
             item-value="id"
             label="目标知识库"
             prepend-inner-icon="mdi-book-open-page-variant-outline"
+            density="comfortable"
+            variant="outlined"
             :loading="detailLoading"
             class="mb-2"
           />
@@ -379,6 +383,8 @@ function formatDate(value: string) {
             :label="selected.templateType === 'DOCUMENT' ? '文档标题' : '知识库名称'"
             :maxlength="selected.templateType === 'DOCUMENT' ? 500 : 160"
             counter
+            density="comfortable"
+            variant="outlined"
             autofocus
             class="mb-2"
             @update:model-value="onNameInput"
@@ -390,11 +396,12 @@ function formatDate(value: string) {
             :maxlength="selected.templateType === 'DOCUMENT' ? 180 : 80"
             hint="仅保留文字、数字和连字符"
             persistent-hint
+            density="comfortable"
+            variant="outlined"
             @blur="onSlugInput"
           />
         </v-card-text>
-        <v-divider />
-        <v-card-actions class="pa-5 pa-md-6">
+        <v-card-actions class="detail-actions">
           <v-btn color="error" variant="text" prepend-icon="mdi-trash-can-outline" :disabled="creating || deleting" @click="deleteConfirmationOpen = true">删除模板</v-btn>
           <v-spacer />
           <v-btn variant="text" :disabled="creating || deleting" @click="closeTemplate">取消</v-btn>
@@ -403,44 +410,77 @@ function formatDate(value: string) {
       </v-card>
     </v-dialog>
 
-    <v-dialog v-model="deleteConfirmationOpen" max-width="480" :persistent="deleting">
-      <v-card rounded="xl">
-        <v-card-title class="pa-6 pb-2">删除模板？</v-card-title>
-        <v-card-text class="px-6 pb-3">
+    <v-dialog v-model="deleteConfirmationOpen" max-width="420" :persistent="deleting">
+      <v-card rounded="lg">
+        <v-card-title class="delete-title">删除模板？</v-card-title>
+        <v-card-text class="delete-body">
           模板“{{ selected?.name }}”会被永久删除，已经用它创建的内容不会受到影响。
         </v-card-text>
-        <v-card-actions class="pa-6 pt-3">
+        <v-card-actions class="delete-actions">
           <v-spacer />
           <v-btn variant="text" :disabled="deleting" @click="deleteConfirmationOpen = false">取消</v-btn>
           <v-btn color="error" variant="flat" :loading="deleting" @click="deleteTemplate">删除模板</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
-  </div>
+  </main>
 </template>
 
 <style scoped>
-.templates-view{max-width:1120px;padding-top:42px}.templates-view :deep(.page-heading){margin-bottom:24px}.templates-view :deep(.page-heading h1){font-size:28px;font-weight:650;letter-spacing:-.3px}.templates-view :deep(.page-heading p){margin-top:5px;color:#8a8f8d;font-size:13px}.templates-view :deep(.page-heading>.v-chip){height:28px;border-radius:4px}.templates-view>.section-card.mb-5{border:0!important;border-bottom:1px solid #e7e9e8!important;border-radius:0!important;box-shadow:none!important}.template-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;padding:0 0 15px!important }
-.workspace-filter { flex: 0 1 260px; }
-.search-filter { flex: 1 1 300px; }
-.template-toolbar :deep(.v-field){border-radius:5px}.template-toolbar :deep(.v-btn){height:38px;border-radius:4px;font-size:13px;letter-spacing:0;text-transform:none}.template-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); gap: 14px; }
-.template-card { overflow: hidden; min-height: 310px;border:1px solid #e7e9e8!important;border-radius:6px!important;box-shadow:none!important;transition:border-color .12s ease,box-shadow .12s ease}.template-card:hover{border-color:#c9cccb!important;box-shadow:0 8px 24px rgba(0,0,0,.06)!important}
-.template-cover { height: 144px; position: relative; background:#f5f7f7; }
-.template-cover-fallback { height: 100%; display: grid; place-items: center; color: rgb(var(--v-theme-primary)); }
-.template-type { position: absolute; left: 10px; bottom: 9px; border-radius:4px!important;box-shadow:none }
-.template-title { margin: 0; font-size: 15px; font-weight:600;line-height: 1.4; }
-.template-description { min-height: 42px; margin: 7px 0 14px; color:#8a8f8d;font-size:13px; line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.template-meta { display: flex; justify-content: space-between; gap: 12px; color:#a6aaa8; font-size: 11px; }
-.template-meta span { display: inline-flex; align-items: center; gap: 4px; }
-.load-more { display: flex; justify-content: center; padding: 28px 0 4px; }
-.dialog-title { display: flex; align-items: center; font-size: 17px; }
-.dialog-title > div { display: grid; }
-.detail-summary { display: flex; align-items: flex-start; gap: 16px; }
-.detail-summary p { margin: 5px 0; color: rgb(var(--v-theme-on-surface), .65); line-height: 1.55; }
-.detail-summary small { color: rgb(var(--v-theme-on-surface), .5); }
+.templates-view { min-height: 100vh; margin: -24px; color: #262626; background: #fff; }
+.templates-view :deep(.v-btn), .templates-view :deep(.v-chip) { text-transform: none; letter-spacing: 0; }
+.templates-header { height: 65px; padding: 0 26px; border-bottom: 1px solid #eceeed; display: flex; align-items: center; justify-content: space-between; }
+.templates-header h1 { margin: 0; font-size: 18px; font-weight: 650; line-height: 25px; }
+.templates-header p { margin: 1px 0 0; color: #949a97; font-size: 12px; }
+.current-workspace { height: 27px; padding: 0 8px; border-radius: 6px; display: inline-flex; align-items: center; gap: 5px; color: #65706a; background: #f3f5f4; font-size: 11px; }
+.templates-body { width: min(1100px, calc(100% - 48px)); margin: 18px auto 64px; }
+.template-toolbar-panel { margin-bottom: 18px; padding-bottom: 13px; border-bottom: 1px solid #e7e9e8; }
+.template-toolbar { display: flex; align-items: center; gap: 9px; }
+.workspace-filter { flex: 0 1 230px; }
+.search-filter { flex: 1 1 280px; }
+.template-toolbar :deep(.v-field) { border-radius: 6px; }
+.template-toolbar :deep(.v-btn) { height: 32px; border-radius: 5px; font-size: 12px; }
+.templates-error { margin-bottom: 14px; }
+.template-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 11px; }
+.template-skeleton { min-height: 260px; border: 1px solid #eceeed; border-radius: 8px; }
+.template-card { min-height: 270px; overflow: hidden; border: 1px solid #e7e9e8 !important; border-radius: 8px !important; box-shadow: none !important; transition: border-color .13s, box-shadow .13s, transform .13s; }
+.template-card:hover { border-color: #c8cdca !important; box-shadow: 0 5px 15px rgba(33, 42, 37, .055) !important; transform: translateY(-1px); }
+.template-card:focus-visible { outline: 2px solid #4382e8; outline-offset: 2px; }
+.template-cover { height: 116px; position: relative; background: #f5f7f7; }
+.template-cover :deep(.v-img) { height: 116px !important; }
+.template-cover-fallback { height: 100%; display: grid; place-items: center; color: #3978f6; }
+.template-type { position: absolute; left: 9px; bottom: 8px; height: 23px !important; border-radius: 4px !important; box-shadow: none; font-size: 10px; }
+.template-card-body { padding: 14px; }
+.template-category { margin-bottom: 6px; color: #3978f6; font-size: 10px; font-weight: 600; }
+.template-title { margin: 0; color: #333936; font-size: 14px; font-weight: 600; line-height: 1.4; }
+.template-description { min-height: 39px; margin: 6px 0 12px; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: #858c88; font-size: 12px; line-height: 1.6; }
+.template-meta { display: flex; justify-content: space-between; gap: 9px; color: #a1a7a4; font-size: 10px; }
+.template-meta span { min-width: 0; display: inline-flex; align-items: center; gap: 3px; }
+.load-more { padding: 22px 0 4px; display: flex; justify-content: center; }
+.templates-empty { min-height: 350px; display: grid; place-content: center; color: #adb2af; text-align: center; }
+.templates-empty h2 { margin: 12px 0 4px; color: #606763; font-size: 15px; font-weight: 600; }
+.templates-empty p { margin: 0 0 16px; color: #979d9a; font-size: 12px; }
+.dialog-title { min-height: 60px; padding: 0 12px 0 20px; border-bottom: 1px solid #eceeed; display: flex; align-items: center; font-size: 16px; font-weight: 650; }
+.detail-body { padding: 18px 22px 4px; }
+.detail-summary { margin-bottom: 18px; display: flex; align-items: flex-start; gap: 12px; }
+.detail-summary strong { color: #414844; font-size: 13px; }
+.detail-summary p { margin: 3px 0; color: #747b77; font-size: 12px; line-height: 1.55; }
+.detail-summary small { color: #a0a6a3; font-size: 10px; }
+.detail-alert { margin-bottom: 14px; }
+.detail-actions { padding: 12px 16px 16px; border-top: 1px solid #eceeed; }
+.delete-title { padding: 21px 22px 8px; font-size: 17px; font-weight: 650; }
+.delete-body { padding: 10px 22px 4px; color: #606763; font-size: 13px; line-height: 1.7; }
+.delete-actions { padding: 12px 16px 16px; }
 @media (max-width: 700px) {
-  .template-toolbar > * { flex-basis: 100%; width: 100%; }
+  .templates-view { margin: -16px; }
+  .templates-header { padding: 0 18px; }
+  .templates-body { width: calc(100% - 28px); margin-top: 12px; }
+  .current-workspace { max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .template-toolbar { align-items: stretch; flex-direction: column; }
+  .template-toolbar > * { flex-basis: auto; width: 100%; }
   .template-grid { grid-template-columns: 1fr; }
   .template-meta { align-items: flex-start; flex-direction: column; }
+  .detail-summary > .v-avatar { display: none; }
+  .detail-actions { flex-wrap: wrap; }
 }
 </style>

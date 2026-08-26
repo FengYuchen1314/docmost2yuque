@@ -195,15 +195,16 @@ function relativeTime(value: string) {
 </script>
 
 <template>
-  <div class="page-shell trash-page">
-    <header class="page-heading">
+  <main class="trash-page">
+    <header class="trash-header">
       <div>
         <h1>回收站</h1>
         <p>删除的内容会保留在这里，恢复后仍位于原知识库。</p>
       </div>
     </header>
 
-    <v-card class="section-card trash-toolbar mb-4" variant="flat">
+    <div class="trash-body">
+    <section class="trash-toolbar">
       <form class="search-form" role="search" @submit.prevent="applySearch">
         <v-text-field
           v-model="searchInput"
@@ -212,24 +213,24 @@ function relativeTime(value: string) {
           prepend-inner-icon="mdi-magnify"
           :append-inner-icon="searchInput ? 'mdi-close' : undefined"
           variant="outlined"
-          density="comfortable"
+          density="compact"
           hide-details
           maxlength="200"
           @click:append-inner="clearSearch"
         />
-        <v-btn type="submit" variant="tonal" color="primary">搜索</v-btn>
+        <v-btn type="submit" variant="tonal" color="primary" size="small">搜索</v-btn>
       </form>
       <span class="result-count"><strong>{{ displayedCount }}</strong> 项</span>
-    </v-card>
+    </section>
 
-    <v-alert v-if="error" type="error" variant="tonal" closable class="mb-4" @click:close="error = ''">
+    <v-alert v-if="error" type="error" variant="tonal" density="compact" closable class="trash-error" @click:close="error = ''">
       <div class="d-flex align-center flex-wrap ga-2">
         <span>{{ error }}</span>
         <v-btn size="small" variant="text" @click="loadTrash(true)">重试</v-btn>
       </div>
     </v-alert>
 
-    <v-card v-if="items.length" class="section-card batch-card mb-4" variant="flat">
+    <v-card v-if="items.length" class="batch-card" variant="flat">
       <v-checkbox-btn
         :model-value="allSelected"
         color="primary"
@@ -242,7 +243,8 @@ function relativeTime(value: string) {
       </div>
       <v-spacer />
       <v-btn
-        variant="tonal"
+        variant="text"
+        size="small"
         prepend-icon="mdi-restore"
         :disabled="!canRestoreSelected"
         :loading="restoring"
@@ -252,7 +254,8 @@ function relativeTime(value: string) {
       </v-btn>
       <v-btn
         color="error"
-        variant="tonal"
+        variant="text"
+        size="small"
         prepend-icon="mdi-delete-forever-outline"
         :disabled="!canDeleteSelected"
         @click="openDeleteDialog(selectedItems)"
@@ -261,8 +264,8 @@ function relativeTime(value: string) {
       </v-btn>
     </v-card>
 
-    <v-card class="section-card trash-list-card" variant="flat">
-      <v-progress-linear v-if="loading" indeterminate color="primary" />
+    <v-card class="trash-list-card" variant="flat">
+      <v-progress-linear v-if="loading" indeterminate color="primary" height="2" />
 
       <div v-if="!loading && items.length" class="trash-list">
         <article
@@ -278,7 +281,7 @@ function relativeTime(value: string) {
             @update:model-value="toggleSelected(item.id)"
           />
 
-          <v-avatar color="primary" variant="tonal" rounded="lg" size="42" class="resource-icon">
+          <v-avatar color="primary" variant="tonal" rounded="lg" size="36" class="resource-icon">
             <span v-if="item.knowledgeBaseIcon" class="kb-icon">{{ item.knowledgeBaseIcon }}</span>
             <v-icon v-else size="21">{{ contentTypeIcon(item.contentType) }}</v-icon>
           </v-avatar>
@@ -298,7 +301,7 @@ function relativeTime(value: string) {
           <div class="trash-actions">
             <v-btn
               size="small"
-              variant="tonal"
+              variant="text"
               prepend-icon="mdi-restore"
               :disabled="!item.restoreAllowed"
               :loading="restoring"
@@ -322,7 +325,8 @@ function relativeTime(value: string) {
 
         <div v-if="hasMore" class="load-more">
           <v-btn
-            variant="tonal"
+            variant="text"
+            size="small"
             prepend-icon="mdi-chevron-down"
             :loading="loadingMore"
             @click="loadTrash(false)"
@@ -332,27 +336,26 @@ function relativeTime(value: string) {
         </div>
       </div>
 
-      <div v-else-if="!loading && !error" class="empty-state trash-empty">
+      <div v-else-if="!loading && !error" class="trash-empty">
         <div>
-          <v-avatar color="primary" variant="tonal" size="60" class="mb-4">
-            <v-icon size="30">mdi-delete-empty-outline</v-icon>
-          </v-avatar>
+          <v-icon size="38">mdi-delete-empty-outline</v-icon>
           <h3>{{ appliedQuery ? '没有匹配的已删除内容' : '回收站是空的' }}</h3>
           <p>{{ appliedQuery ? '换一个关键词，或清空搜索条件。' : '你有权管理的已删除文稿会出现在这里。' }}</p>
           <v-btn v-if="appliedQuery" variant="tonal" class="mt-4" @click="clearSearch">清空搜索</v-btn>
         </div>
       </div>
     </v-card>
+    </div>
 
     <v-dialog
       v-model="deleteDialogOpen"
-      max-width="580"
+      max-width="520"
       persistent
       @after-leave="deleteConfirmation = ''; deleteError = ''"
     >
-      <v-card class="delete-dialog">
+      <v-card class="delete-dialog" rounded="lg">
         <v-card-title class="delete-heading">
-          <v-avatar color="error" variant="tonal" size="44">
+          <v-avatar color="error" variant="tonal" size="36">
             <v-icon>mdi-alert-octagon-outline</v-icon>
           </v-avatar>
           <div>
@@ -360,11 +363,11 @@ function relativeTime(value: string) {
             <h2>{{ deleteTargets.length === 1 ? `永久删除“${deleteTargets[0]?.title}”` : `永久删除 ${deleteTargets.length} 项内容` }}</h2>
           </div>
           <v-spacer />
-          <v-btn icon="mdi-close" variant="text" :disabled="deleting" aria-label="关闭" @click="closeDeleteDialog" />
+          <v-btn icon="mdi-close" size="small" variant="text" :disabled="deleting" aria-label="关闭" @click="closeDeleteDialog" />
         </v-card-title>
 
         <v-card-text>
-          <v-alert type="error" variant="tonal" icon="mdi-delete-alert-outline" class="mb-4">
+          <v-alert type="error" variant="tonal" density="compact" icon="mdi-delete-alert-outline" class="mb-4">
             正文、历史版本、发布快照和关联数据将一并删除，且无法恢复。
           </v-alert>
 
@@ -383,17 +386,17 @@ function relativeTime(value: string) {
             v-model="deleteConfirmation"
             label="永久删除确认文字"
             variant="outlined"
-            density="comfortable"
+            density="compact"
             autocomplete="off"
             :disabled="deleting"
             autofocus
             hide-details="auto"
             @keydown.enter="permanentlyDelete"
           />
-          <v-alert v-if="deleteError" type="error" variant="tonal" class="mt-4">{{ deleteError }}</v-alert>
+          <v-alert v-if="deleteError" type="error" variant="tonal" density="compact" class="mt-4">{{ deleteError }}</v-alert>
         </v-card-text>
 
-        <v-card-actions class="px-6 pb-5">
+        <v-card-actions class="delete-actions">
           <v-spacer />
           <v-btn variant="text" :disabled="deleting" @click="closeDeleteDialog">取消</v-btn>
           <v-btn
@@ -409,66 +412,80 @@ function relativeTime(value: string) {
         </v-card-actions>
       </v-card>
     </v-dialog>
-  </div>
+  </main>
 </template>
 
 <style scoped>
-.trash-page { max-width: 960px; padding-top:42px; }
-.trash-page :deep(.page-heading){margin-bottom:24px}.trash-page :deep(.page-heading h1){font-size:28px;font-weight:650;letter-spacing:-.3px}.trash-page :deep(.page-heading p){margin-top:5px;color:#8a8f8d;font-size:13px}.danger-eyebrow { margin-bottom: 5px; color: #d33b35; font-size: 11px; font-weight: 700; letter-spacing: .08em; }
-.trash-toolbar { display: flex; align-items: center; gap: 14px; border:0!important;border-bottom:1px solid #e7e9e8!important;border-radius:0!important;padding: 0 0 14px;box-shadow:none!important }
-.search-form { display: flex; min-width: 0; max-width: 680px; flex: 1; align-items: center; gap: 10px; }
-.search-form :deep(.v-field){border-radius:5px}.search-form :deep(.v-btn){height:38px;border-radius:5px;letter-spacing:0;text-transform:none}.result-count { color: #8a8f8d; font-size: 12px; white-space: nowrap; }
-.result-count strong { color: #585a59; }
-.batch-card { display: flex; align-items: center; gap: 10px; min-height:48px;border-color:#dbe7ff!important;border-radius:5px!important;padding: 8px 12px; background:#f5f8ff!important;box-shadow:none!important }
+.trash-page { min-height: 100vh; margin: -24px; color: #262626; background: #fff; }
+.trash-page :deep(.v-btn) { text-transform: none; letter-spacing: 0; }
+.trash-header { height: 65px; padding: 0 26px; border-bottom: 1px solid #eceeed; display: flex; align-items: center; }
+.trash-header h1 { margin: 0; font-size: 18px; font-weight: 650; line-height: 25px; }
+.trash-header p { margin: 1px 0 0; color: #949a97; font-size: 12px; }
+.trash-body { width: min(940px, calc(100% - 48px)); margin: 18px auto 64px; }
+.trash-toolbar { padding-bottom: 13px; border-bottom: 1px solid #e7e9e8; display: flex; align-items: center; gap: 12px; }
+.search-form { min-width: 0; max-width: 620px; display: flex; flex: 1; align-items: center; gap: 8px; }
+.search-form :deep(.v-field) { border-radius: 6px; }
+.search-form :deep(.v-btn) { height: 32px; border-radius: 5px; }
+.result-count { color: #969c99; font-size: 11px; white-space: nowrap; }
+.result-count strong { color: #5e6561; }
+.trash-error { margin: 12px 0; }
+.batch-card { min-height: 44px; margin: 12px 0 6px; padding: 5px 8px; border: 1px solid #d9e5fa !important; border-radius: 6px !important; display: flex; align-items: center; gap: 7px; background: #f7f9fd !important; box-shadow: none !important; }
 .batch-copy { display: flex; flex-direction: column; }
-.batch-copy strong { font-size: .9rem; }
-.batch-copy span { color: rgb(var(--v-theme-on-surface-variant)); font-size: .76rem; }
-.trash-list-card { overflow: hidden; min-height: 280px;border:0!important;border-radius:0!important;box-shadow:none!important }
+.batch-copy strong { color: #4b5e78; font-size: 12px; }
+.batch-copy span { color: #8792a0; font-size: 10px; }
+.trash-list-card { min-height: 300px; overflow: hidden; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; background: transparent !important; }
 .trash-list { padding: 0; }
-.trash-item { position: relative; display: flex; min-height:72px;align-items: center; gap: 11px; border-radius: 4px; padding: 10px 8px; transition: background-color .12s ease; }
-.trash-item:hover, .trash-item.selected { background:#f6f7f7; }
-.trash-item + .trash-item::before { position: absolute; top: 0; right: 14px; left: 68px; height: 1px; background: rgba(var(--v-border-color), var(--v-border-opacity)); content: ''; }
-.resource-icon { flex: 0 0 auto;border-radius:5px!important }
-.kb-icon { font-size: 1.2rem; line-height: 1; }
+.trash-item { position: relative; min-height: 68px; padding: 9px 6px; border-radius: 4px; display: flex; align-items: center; gap: 9px; transition: background-color .12s; }
+.trash-item:hover, .trash-item.selected { background: #f7f8f7; }
+.trash-item + .trash-item::before { position: absolute; top: 0; right: 12px; left: 61px; height: 1px; background: #eceeed; content: ''; }
+.resource-icon { flex: 0 0 auto; border-radius: 5px !important; }
+.kb-icon { font-size: 1rem; line-height: 1; }
 .trash-main { min-width: 0; flex: 1; }
-.trash-title-row { display: flex; min-width: 0; align-items: center; gap: 8px; }
-.trash-title-row strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
-.trash-main p { overflow: hidden; margin: 3px 0 2px; color:#8a8f8d; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.trash-main small { color: rgb(var(--v-theme-on-surface-variant)); font-size: .74rem; opacity: .82; }
-.trash-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
-.load-more { display: flex; justify-content: center; padding: 18px 12px 14px; }
-.trash-empty { min-height: 320px; }
-.delete-dialog { border-radius: 18px !important; }
-.delete-heading { display: flex; align-items: center; gap: 13px; padding: 22px 24px 12px; white-space: normal; }
-.delete-heading h2 { margin: 0; font-size: 1.12rem; line-height: 1.35; }
-.danger-eyebrow { margin-bottom: 2px; color: rgb(var(--v-theme-error)); }
-.delete-preview { overflow: hidden; border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity)); border-radius: 12px; }
-.delete-preview > div { display: flex; flex-direction: column; gap: 1px; padding: 10px 13px; }
-.delete-preview > div + div { border-top: 1px solid rgba(var(--v-border-color), var(--v-border-opacity)); }
-.delete-preview strong { overflow: hidden; font-size: .87rem; text-overflow: ellipsis; white-space: nowrap; }
-.delete-preview small { color: rgb(var(--v-theme-on-surface-variant)); }
-.delete-preview > span { display: block; border-top: 1px solid rgba(var(--v-border-color), var(--v-border-opacity)); padding: 9px 13px; color: rgb(var(--v-theme-on-surface-variant)); font-size: .8rem; }
-.confirm-instruction { margin: 0 0 8px; color: rgb(var(--v-theme-on-surface-variant)); font-size: .86rem; }
-.confirm-instruction strong { color: rgb(var(--v-theme-error)); }
+.trash-title-row { min-width: 0; display: flex; align-items: center; gap: 7px; }
+.trash-title-row strong { overflow: hidden; color: #3c433f; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.trash-main p { margin: 2px 0 1px; overflow: hidden; color: #858c88; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.trash-main small { color: #a0a6a3; font-size: 10px; }
+.trash-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 2px; opacity: 0; }
+.trash-item:hover .trash-actions, .trash-actions:focus-within { opacity: 1; }
+.load-more { padding: 18px 12px 12px; display: flex; justify-content: center; }
+.trash-empty { min-height: 340px; display: grid; place-content: center; color: #adb2af; text-align: center; }
+.trash-empty h3 { margin: 12px 0 4px; color: #606763; font-size: 15px; font-weight: 600; }
+.trash-empty p { margin: 0; color: #979d9a; font-size: 12px; }
+.delete-dialog { border-radius: 10px !important; }
+.delete-heading { min-height: 68px; padding: 12px 12px 10px 20px; display: flex; align-items: center; gap: 11px; white-space: normal; }
+.delete-heading h2 { margin: 0; font-size: 16px; line-height: 1.35; }
+.danger-eyebrow { margin-bottom: 1px; color: #d33b35; font-size: 10px; font-weight: 700; letter-spacing: .06em; }
+.delete-dialog :deep(.v-card-text) { padding: 10px 22px 4px; }
+.delete-preview { overflow: hidden; border: 1px solid #e2e5e3; border-radius: 7px; }
+.delete-preview > div { padding: 8px 11px; display: flex; flex-direction: column; gap: 1px; }
+.delete-preview > div + div { border-top: 1px solid #eceeed; }
+.delete-preview strong { overflow: hidden; color: #444b47; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.delete-preview small { color: #929895; font-size: 10px; }
+.delete-preview > span { padding: 7px 11px; border-top: 1px solid #eceeed; display: block; color: #858c88; font-size: 11px; }
+.confirm-instruction { margin: 0 0 7px; color: #737a76; font-size: 12px; }
+.confirm-instruction strong { color: #d14343; }
+.delete-actions { padding: 12px 16px 16px; }
 
 @media (max-width: 720px) {
-  .trash-toolbar { align-items: stretch; flex-direction: column; gap: 9px; }
+  .trash-page { margin: -16px; }
+  .trash-header { padding: 0 18px; }
+  .trash-body { width: calc(100% - 24px); margin-top: 12px; }
+  .trash-toolbar { align-items: stretch; flex-direction: column; gap: 7px; }
   .result-count { align-self: flex-end; }
   .batch-card { align-items: flex-start; flex-wrap: wrap; }
   .batch-card :deep(.v-spacer) { display: none; }
-  .batch-copy { min-width: calc(100% - 48px); }
+  .batch-copy { min-width: calc(100% - 42px); }
   .trash-item { align-items: flex-start; flex-wrap: wrap; }
   .resource-icon { display: none; }
-  .trash-main { min-width: calc(100% - 54px); }
-  .trash-actions { width: 100%; justify-content: flex-end; padding-left: 44px; }
-  .trash-item + .trash-item::before { left: 12px; }
+  .trash-main { min-width: calc(100% - 45px); }
+  .trash-actions { width: 100%; padding-left: 37px; justify-content: flex-end; opacity: 1; }
+  .trash-item + .trash-item::before { left: 10px; }
 }
-
 @media (max-width: 520px) {
   .search-form { align-items: stretch; flex-direction: column; }
   .search-form .v-btn { width: 100%; }
   .batch-card > .v-btn { flex: 1; }
-  .trash-list { padding: 4px; }
-  .trash-item { padding: 14px 8px; }
+  .trash-item { padding: 12px 5px; }
+  .delete-heading > .v-avatar { display: none; }
 }
 </style>

@@ -180,15 +180,16 @@ function relativeTime(value: string) {
 </script>
 
 <template>
-  <div class="page-shell notifications-page">
-    <header class="page-heading">
+  <main class="notifications-page">
+    <header class="notifications-header">
       <div>
         <h1>消息</h1>
         <p>提及、评论、邀请和审批集中在这里。</p>
       </div>
       <v-btn
         color="primary"
-        variant="tonal"
+        variant="text"
+        size="small"
         prepend-icon="mdi-check-all"
         :loading="markingAll"
         @click="markAllRead"
@@ -197,9 +198,10 @@ function relativeTime(value: string) {
       </v-btn>
     </header>
 
-    <v-card class="section-card filter-card mb-5" variant="flat">
+    <div class="notifications-body">
+    <v-card class="filter-card" variant="flat">
       <div class="filter-row">
-        <v-btn-toggle v-model="unreadOnly" mandatory density="comfortable" color="primary" variant="tonal">
+        <v-btn-toggle v-model="unreadOnly" mandatory density="compact" color="primary" variant="tonal">
           <v-btn :value="false">全部</v-btn>
           <v-btn :value="true">未读</v-btn>
         </v-btn-toggle>
@@ -227,15 +229,16 @@ function relativeTime(value: string) {
       </div>
     </v-card>
 
-    <v-alert v-if="error" type="error" variant="tonal" closable class="mb-5" @click:close="error = ''">
+    <v-alert v-if="error" type="error" variant="tonal" density="compact" closable class="notification-error" @click:close="error = ''">
       <div class="d-flex align-center flex-wrap ga-2">
         <span>{{ error }}</span>
         <v-btn size="small" variant="text" @click="loadNotifications(true)">重试</v-btn>
       </div>
     </v-alert>
 
-    <v-card class="section-card notification-card" variant="flat">
-      <v-progress-linear v-if="loading" indeterminate color="primary" />
+    <v-card class="notification-card" variant="flat">
+      <v-progress-linear v-if="loading" indeterminate color="primary" height="2" />
+      <div v-if="loading" class="notification-skeletons" aria-label="正在加载消息"><div v-for="index in 5" :key="index"><span /><p><i /><i /></p></div></div>
 
       <div v-if="!loading && notifications.length" class="notification-list">
         <button
@@ -250,10 +253,10 @@ function relativeTime(value: string) {
           <v-avatar
             :color="notificationColor(notification.type)"
             variant="tonal"
-            size="42"
+            size="36"
             class="notification-avatar"
           >
-            <v-icon size="21">{{ notificationIcon(notification.type) }}</v-icon>
+            <v-icon size="18">{{ notificationIcon(notification.type) }}</v-icon>
           </v-avatar>
 
           <span class="notification-copy">
@@ -281,7 +284,8 @@ function relativeTime(value: string) {
 
         <div v-if="hasMore" class="load-more">
           <v-btn
-            variant="tonal"
+            variant="text"
+            size="small"
             prepend-icon="mdi-chevron-down"
             :loading="loadingMore"
             @click="loadNotifications(false)"
@@ -291,62 +295,76 @@ function relativeTime(value: string) {
         </div>
       </div>
 
-      <div v-else-if="!loading && !error" class="empty-state notification-empty">
+      <div v-else-if="!loading && !error" class="notification-empty">
         <div>
-          <v-avatar color="primary" variant="tonal" size="60" class="mb-4">
-            <v-icon size="30">{{ unreadOnly ? 'mdi-email-check-outline' : 'mdi-bell-sleep-outline' }}</v-icon>
-          </v-avatar>
+          <v-icon size="38">{{ unreadOnly ? 'mdi-email-check-outline' : 'mdi-bell-sleep-outline' }}</v-icon>
           <h3>{{ unreadOnly ? '没有未读消息' : '没有消息' }}</h3>
           <p>{{ unreadOnly ? '当前分类中的消息都已经处理完了。' : '当前分类还没有新的协作动态。' }}</p>
         </div>
       </div>
     </v-card>
-  </div>
+    </div>
+  </main>
 </template>
 
 <style scoped>
-.notifications-page { max-width: 920px; padding-top: 42px; }
-.notifications-page :deep(.page-heading) { margin-bottom: 24px; }
-.notifications-page :deep(.page-heading h1) { font-size: 28px; font-weight: 650; letter-spacing: -.3px; }
-.notifications-page :deep(.page-heading p) { margin-top: 5px; color: #8a8f8d; font-size: 13px; }
-.notifications-page :deep(.page-heading .v-btn) { height: 32px; border-radius: 5px; letter-spacing: 0; text-transform: none; }
-.filter-card { border: 0 !important; border-bottom: 1px solid #e7e9e8 !important; border-radius: 0 !important; padding: 5px 0 12px; box-shadow: none !important; }
-.filter-row { display: flex; align-items: center; gap: 14px; min-height: 44px; }
-.filter-divider { height: 28px; align-self: center; }
-.filter-row :deep(.v-btn),.filter-row :deep(.v-chip){height:30px;border-radius:4px;font-size:13px;letter-spacing:0;text-transform:none}.result-count { flex: 0 0 auto; color: #8a8f8d; font-size: 12px; white-space: nowrap; }
-.result-count strong { color: #585a59; }
-.notification-card { overflow: hidden; min-height: 280px; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; }
+.notifications-page { min-height: 100vh; margin: -24px; color: #262626; background: #fff; }
+.notifications-page :deep(.v-btn), .notifications-page :deep(.v-chip) { text-transform: none; letter-spacing: 0; }
+.notifications-header { height: 65px; padding: 0 26px; border-bottom: 1px solid #eceeed; display: flex; align-items: center; justify-content: space-between; }
+.notifications-header h1 { margin: 0; font-size: 18px; font-weight: 650; line-height: 25px; }
+.notifications-header p { margin: 1px 0 0; color: #949a97; font-size: 12px; }
+.notifications-body { width: min(900px, calc(100% - 48px)); margin: 20px auto 64px; }
+.filter-card { border: 0 !important; border-bottom: 1px solid #e7e9e8 !important; border-radius: 0 !important; padding: 0 0 10px; box-shadow: none !important; background: transparent !important; }
+.filter-row { min-height: 40px; display: flex; align-items: center; gap: 11px; }
+.filter-divider { height: 24px; align-self: center; }
+.filter-row :deep(.v-btn), .filter-row :deep(.v-chip) { height: 28px; border-radius: 5px; font-size: 12px; }
+.filter-row :deep(.v-chip-group) { min-width: 0; }
+.result-count { flex: 0 0 auto; color: #969c99; font-size: 11px; white-space: nowrap; }
+.result-count strong { color: #5e6561; }
+.notification-error { margin: 12px 0; }
+.notification-card { min-height: 300px; overflow: hidden; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; background: transparent !important; }
+.notification-skeletons > div { height: 68px; padding: 12px 9px; border-bottom: 1px solid #eef0ef; display: flex; align-items: center; gap: 12px; }
+.notification-skeletons > div > span { width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(90deg, #f2f3f2, #fafafa, #f2f3f2); background-size: 200% 100%; animation: shimmer 1.35s infinite; }
+.notification-skeletons p { margin: 0; display: grid; flex: 1; gap: 7px; }
+.notification-skeletons i { width: 38%; height: 9px; border-radius: 4px; background: #f0f2f1; }
+.notification-skeletons i:last-child { width: 68%; }
 .notification-list { padding: 0; }
-.notification-item { position: relative; display: flex; width: 100%; min-height:76px; align-items: center; gap: 12px; border: 0; border-radius: 4px; padding: 12px 10px; background: transparent; color: inherit; text-align: left; cursor: pointer; transition: background-color .12s ease; }
-.notification-item:hover { background: #f6f7f7; }
-.notification-item:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: -2px; }
-.notification-item + .notification-item::before { position: absolute; top: 0; right: 14px; left: 70px; height: 1px; background: rgba(var(--v-border-color), var(--v-border-opacity)); content: ''; }
+.notification-item { position: relative; width: 100%; min-height: 70px; padding: 10px 8px; border: 0; border-radius: 4px; display: flex; align-items: center; gap: 11px; background: transparent; color: inherit; text-align: left; cursor: pointer; transition: background-color .12s; }
+.notification-item:hover { background: #f7f8f7; }
+.notification-item:focus-visible { outline: 2px solid #4382e8; outline-offset: -2px; }
+.notification-item + .notification-item::before { position: absolute; top: 0; right: 12px; left: 65px; height: 1px; background: #eceeed; content: ''; }
 .notification-item.unread { background: #f7faff; }
-.notification-item.unread .notification-title { font-weight: 750; }
-.unread-marker { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 999px; background: transparent; }
-.unread .unread-marker { background: #2f6feb; box-shadow: none; }
+.notification-item.unread:hover { background: #f2f7ff; }
+.notification-item.unread .notification-title { font-weight: 700; }
+.unread-marker { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: transparent; }
+.unread .unread-marker { background: #2f6feb; }
 .notification-avatar { flex: 0 0 auto; }
-.notification-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 3px; }
-.notification-title { display: flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 600; }
-.notification-summary { overflow: hidden; color: #585a59; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.notification-copy time { color: rgb(var(--v-theme-on-surface-variant)); font-size: .75rem; opacity: .8; }
-.notification-chevron { color: rgb(var(--v-theme-on-surface-variant)); opacity: .7; }
-.load-more { display: flex; justify-content: center; padding: 18px 12px 14px; }
-.notification-empty { min-height: 320px; }
+.notification-copy { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 2px; }
+.notification-title { display: flex; align-items: center; gap: 6px; color: #3d4440; font-size: 13px; font-weight: 600; }
+.notification-summary { overflow: hidden; color: #676e6a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.notification-copy time { color: #a0a6a3; font-size: 10px; }
+.notification-chevron { color: #9ca29f; }
+.load-more { padding: 18px 12px 12px; display: flex; justify-content: center; }
+.notification-empty { min-height: 330px; display: grid; place-content: center; color: #adb2af; text-align: center; }
+.notification-empty h3 { margin: 12px 0 4px; color: #606763; font-size: 15px; font-weight: 600; }
+.notification-empty p { margin: 0; color: #979d9a; font-size: 12px; }
+@keyframes shimmer { to { background-position: -200% 0; } }
 
 @media (max-width: 800px) {
   .filter-row { align-items: flex-start; flex-wrap: wrap; }
   .filter-divider { display: none; }
-  .filter-row :deep(.v-chip-group) { order: 3; width: 100%; }
+  .filter-row :deep(.v-chip-group) { order: 3; width: 100%; overflow-x: auto; }
+  .filter-row :deep(.v-slide-group__content) { flex-wrap: nowrap; }
   .result-count { margin-left: auto; align-self: center; }
 }
-
 @media (max-width: 600px) {
-  .filter-card { padding: 10px; }
-  .notification-list { padding: 4px; }
-  .notification-item { gap: 10px; padding: 14px 9px; }
+  .notifications-page { margin: -16px; }
+  .notifications-header { padding: 0 18px; }
+  .notifications-body { width: calc(100% - 24px); margin-top: 12px; }
+  .notifications-header .v-btn :deep(.v-btn__content) { font-size: 0; }
+  .notification-item { gap: 8px; padding: 12px 5px; }
   .notification-avatar { display: none; }
-  .notification-item + .notification-item::before { left: 26px; }
+  .notification-item + .notification-item::before { left: 18px; }
   .notification-summary { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 }
 </style>

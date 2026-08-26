@@ -233,15 +233,20 @@ function formatTime(value: string) {
   <div class="page-shell account-view">
     <header class="page-heading">
       <div>
-        <div class="text-overline text-primary">账号与安全</div>
         <h1>账号设置</h1>
-        <p>管理公开身份、邮箱账号、登录密码和当前仍可访问账号的设备。</p>
+        <p>管理个人资料、登录密码和当前仍可访问账号的设备。</p>
       </div>
       <v-btn to="/app/profile" variant="outlined" prepend-icon="mdi-account-box-outline">公开主页</v-btn>
     </header>
 
+    <nav class="account-nav" aria-label="账号设置导航">
+      <a href="#account-profile">个人资料</a>
+      <a href="#account-password">修改密码</a>
+      <a href="#account-sessions">登录设备</a>
+    </nav>
+
     <div class="account-grid">
-      <v-card class="section-card" rounded="xl">
+      <v-card id="account-profile" class="section-card account-section" variant="flat">
         <v-card-title class="card-heading pa-5 pa-md-6 pb-3">
           <v-avatar color="primary" variant="tonal"><v-icon>mdi-account-outline</v-icon></v-avatar>
           <div><h2>个人资料</h2><p>显示名会出现在空间成员、团队和协作记录中。</p></div>
@@ -249,7 +254,7 @@ function formatTime(value: string) {
         <v-progress-linear v-if="accountLoading" indeterminate color="primary" />
         <v-card-text class="pa-5 pa-md-6 pt-3">
           <v-form @submit.prevent="saveProfile">
-            <v-text-field v-model="displayName" label="显示名" placeholder="例如：林静" maxlength="200" counter prepend-inner-icon="mdi-card-account-details-outline" hint="可以留空；留空时使用邮箱识别你。" persistent-hint />
+            <v-text-field v-model="displayName" class="setting-field" label="显示名" placeholder="例如：林静" maxlength="200" counter variant="outlined" density="compact" hint="可以留空；留空时使用邮箱识别你。" persistent-hint />
 
             <div class="email-panel mt-5">
               <v-avatar color="primary" variant="tonal"><v-icon>mdi-email-outline</v-icon></v-avatar>
@@ -269,7 +274,7 @@ function formatTime(value: string) {
         </v-card-text>
       </v-card>
 
-      <v-card class="section-card" rounded="xl">
+      <v-card id="account-password" class="section-card account-section" variant="flat">
         <v-card-title class="card-heading pa-5 pa-md-6 pb-3">
           <v-avatar color="primary" variant="tonal"><v-icon>mdi-shield-key-outline</v-icon></v-avatar>
           <div><h2>修改密码</h2><p>验证当前密码后，为账号设置一个新的登录密码。</p></div>
@@ -281,7 +286,9 @@ function formatTime(value: string) {
               :type="showCurrentPassword ? 'text' : 'password'"
               label="当前密码"
               autocomplete="current-password"
-              prepend-inner-icon="mdi-lock-outline"
+              variant="outlined"
+              density="compact"
+              class="setting-field"
               :append-inner-icon="showCurrentPassword ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
               @click:append-inner="showCurrentPassword = !showCurrentPassword"
               @update:model-value="passwordInputChanged"
@@ -297,6 +304,9 @@ function formatTime(value: string) {
                 counter
                 hint="至少 12 位"
                 persistent-hint
+                variant="outlined"
+                density="compact"
+                class="setting-field"
                 :append-inner-icon="showNewPassword ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
                 @click:append-inner="showNewPassword = !showNewPassword"
                 @update:model-value="passwordInputChanged"
@@ -310,6 +320,9 @@ function formatTime(value: string) {
                 maxlength="128"
                 :error="passwordMismatch"
                 :error-messages="passwordMismatch ? ['两次输入的新密码不一致'] : []"
+                variant="outlined"
+                density="compact"
+                class="setting-field"
                 :append-inner-icon="showPasswordConfirmation ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
                 @click:append-inner="showPasswordConfirmation = !showPasswordConfirmation"
                 @update:model-value="passwordInputChanged"
@@ -326,7 +339,7 @@ function formatTime(value: string) {
         </v-card-text>
       </v-card>
 
-      <v-card class="section-card sessions-card" rounded="xl">
+      <v-card id="account-sessions" class="section-card account-section sessions-card" variant="flat">
         <v-card-title class="sessions-heading pa-5 pa-md-6 pb-4">
           <div class="card-heading">
             <v-avatar color="primary" variant="tonal"><v-icon>mdi-monitor-cellphone</v-icon></v-avatar>
@@ -340,7 +353,7 @@ function formatTime(value: string) {
         <v-progress-linear v-if="sessionsLoading" indeterminate color="primary" />
         <v-alert v-if="sessionsError" type="error" variant="tonal" class="ma-5">{{ sessionsError }}</v-alert>
 
-        <v-list v-if="sessions.length" lines="three" class="session-list pa-2 pa-md-4">
+        <v-list v-if="sessions.length" lines="three" density="compact" class="session-list pa-0">
           <template v-for="item in sessions" :key="item.id">
             <v-list-item class="session-row" rounded="lg">
               <template #prepend><v-avatar :color="item.current ? 'success' : 'primary'" variant="tonal"><v-icon>{{ sessionClient(item.userAgent).icon }}</v-icon></v-avatar></template>
@@ -388,38 +401,6 @@ function formatTime(value: string) {
 </template>
 
 <style scoped>
-.account-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: start; }
-.card-heading { display: flex; align-items: center; gap: 14px; white-space: normal; }
-.card-heading h2 { margin: 0; font-size: 1.05rem; }
-.card-heading p { margin: 3px 0 0; color: rgb(var(--v-theme-on-surface), .58); font-size: .84rem; line-height: 1.45; }
-.email-panel { display: flex; align-items: center; gap: 14px; padding: 15px; border: 1px solid rgb(var(--v-theme-on-surface), .08); border-radius: 14px; background: rgb(var(--v-theme-surface-variant), .3); }
-.email-panel > div { display: grid; min-width: 0; flex: 1; }
-.email-panel small, .email-panel span { color: rgb(var(--v-theme-on-surface), .55); }
-.email-panel strong { overflow: hidden; text-overflow: ellipsis; }
-.email-panel span { margin-top: 2px; font-size: .74rem; }
-.password-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.form-actions { display: flex; align-items: center; gap: 12px; }
-.form-actions small { color: rgb(var(--v-theme-on-surface), .55); display: inline-flex; align-items: center; gap: 5px; }
-.sessions-card { grid-column: 1 / -1; }
-.sessions-heading { display: flex; align-items: center; gap: 10px; }
-.session-row { min-height: 82px; }
-.session-title { display: flex; align-items: center; gap: 8px; }
-.session-row .v-list-item-subtitle { display: grid; gap: 3px; }
-.session-row .v-list-item-subtitle small { color: rgb(var(--v-theme-on-surface), .48); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.danger-footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; background: rgb(var(--v-theme-error), .035); }
-.danger-footer strong { color: rgb(var(--v-theme-error)); }
-.danger-footer p { margin: 4px 0 0; color: rgb(var(--v-theme-on-surface), .58); }
-@media (max-width: 960px) {
-  .account-grid { grid-template-columns: 1fr; }
-  .sessions-card { grid-column: auto; }
-  .sessions-heading { align-items: flex-start; flex-wrap: wrap; }
-  .sessions-heading > .v-spacer { display: none; }
-}
-@media (max-width: 700px) {
-  .password-grid { grid-template-columns: 1fr; gap: 0; }
-  .email-panel { align-items: flex-start; flex-wrap: wrap; }
-  .form-actions, .danger-footer { align-items: stretch; flex-direction: column; }
-  .session-title { align-items: flex-start; flex-direction: column; }
-  .session-row :deep(.v-list-item__append) { align-self: center; }
-}
+.account-view{max-width:960px;padding-top:32px}.account-view :deep(.page-heading){margin-bottom:18px}.account-view :deep(.page-heading h1){font-size:26px}.account-view :deep(.page-heading>.v-btn){height:34px;border-color:#d8dad9;border-radius:5px;letter-spacing:0;text-transform:none}.account-nav{position:sticky;top:56px;z-index:5;display:flex;height:44px;align-items:flex-end;gap:28px;border-bottom:1px solid #e7e9e8;background:#fff}.account-nav a{position:relative;height:43px;color:#646a67;font-size:13px;line-height:43px;text-decoration:none}.account-nav a:hover{color:#00a870}.account-nav a:first-child{color:#262626;font-weight:600}.account-nav a:first-child::after{position:absolute;right:0;bottom:-1px;left:0;height:2px;border-radius:999px;background:#00b96b;content:""}.account-grid{display:block}.account-section{scroll-margin-top:108px;border:0!important;border-bottom:1px solid #e7e9e8!important;border-radius:0!important;background:#fff!important;box-shadow:none!important}.account-section :deep(.v-card-title){padding:28px 0 12px!important}.account-section :deep(.v-card-text){padding:0 0 30px!important}.card-heading{display:flex;align-items:flex-start;gap:0;white-space:normal}.card-heading>.v-avatar{display:none}.card-heading h2{margin:0;color:#262626;font-size:17px;font-weight:650;line-height:25px}.card-heading p{margin:3px 0 0;color:#8a8f8d;font-size:12px;line-height:19px}.setting-field{max-width:620px}.account-section :deep(.setting-field .v-field){min-height:40px;border-radius:6px}.account-section :deep(.setting-field .v-field__input){min-height:40px;font-size:13px}.account-section :deep(.v-btn){border-radius:5px;letter-spacing:0;text-transform:none}.account-section :deep(.bg-primary){background:#00b96b!important}.email-panel{display:flex;max-width:620px;align-items:center;gap:12px;padding:12px 0;border-top:1px solid #f0f0f0;border-bottom:1px solid #f0f0f0;background:#fff}.email-panel>.v-avatar{width:34px!important;height:34px!important;border-radius:6px!important}.email-panel>div{display:grid;min-width:0;flex:1}.email-panel small,.email-panel span{color:#8a8f8d;font-size:11px}.email-panel strong{overflow:hidden;color:#4f5552;font-size:13px;text-overflow:ellipsis}.email-panel span{margin-top:2px}.password-grid{display:grid;max-width:620px;grid-template-columns:1fr 1fr;gap:12px}.form-actions{display:flex;max-width:620px;align-items:center;gap:12px}.form-actions small{display:inline-flex;align-items:center;gap:5px;color:#8a8f8d;font-size:11px}.sessions-heading{display:flex;align-items:center;gap:8px}.sessions-heading>.v-btn{height:32px!important;font-size:12px}.sessions-heading>.v-spacer{min-width:12px}.session-list{border-top:1px solid #f0f0f0}.session-list :deep(.v-divider){display:none}.session-row{min-height:72px!important;border-bottom:1px solid #f0f0f0;border-radius:0!important}.session-row :deep(.v-avatar){width:34px!important;height:34px!important;border-radius:6px!important}.session-title{display:flex;align-items:center;gap:8px;font-size:13px}.session-row .v-list-item-subtitle{display:grid;gap:2px;font-size:11px}.session-row .v-list-item-subtitle small{overflow:hidden;color:#a3a7a5;text-overflow:ellipsis;white-space:nowrap}.danger-footer{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-top:18px!important;padding:17px 0!important;border-top:1px solid #f2dddd;background:#fff}.danger-footer strong{color:#cf3f3f;font-size:13px}.danger-footer p{margin:3px 0 0;color:#9a7777;font-size:11px}.danger-footer :deep(.v-btn){height:32px}.account-view :deep(.v-alert){border-radius:6px;font-size:12px}
+@media(max-width:700px){.account-view{padding-top:24px}.account-nav{gap:20px;overflow-x:auto}.password-grid{grid-template-columns:1fr;gap:0}.email-panel{align-items:flex-start;flex-wrap:wrap}.form-actions,.danger-footer{align-items:stretch;flex-direction:column}.sessions-heading{align-items:flex-start;flex-wrap:wrap}.sessions-heading>.v-spacer{display:none}.session-title{align-items:flex-start;flex-direction:column}.session-row :deep(.v-list-item__append){align-self:center}}
 </style>
